@@ -44,5 +44,5 @@ branding:
   icon: 'upload-cloud'
   color: blue
 runs:
-  using: 'node16'
+  using: 'node24'
   main: 'dist/index.js'
