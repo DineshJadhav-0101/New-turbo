@@ -4,10 +4,10 @@ jobs:
     runs-on: ubuntu-latest
     steps: 
     - name: 'Checkout the code'
-      uses: actions/checkout@v2
+      uses: actions/checkout@v5
       
     - name: 'Deploy to an Azure Storage container called cdn' 
-      uses: tibor19/static-website-deploy@v3
+      uses: tibor19/static-website-deploy@v4
       with:
         folder: 'files' # All files and subfolders found in the specified folder will be uploaded.
         connection-string: ${{ secrets.CONNECTION_STRING }}
