@@ -18,14 +18,14 @@ jobs:
       - name: Display REF Number
         run: echo "The entered REF Number is  ${{ github.event.inputs.REF_Number }}"
       
-   #   - name: Push Ref Number In Queue
-    #    run: |
+      - name: Push Ref Number In Queue
+        run: |
     
            # Step 1: Enable Public Network Access
-              # az servicebus namespace update 
-             #  --resource-group myResourceGroup 
-            #   --name myNamespace 
-            #   --public-network-access Enabled
+           az servicebus namespace update 
+               --resource-group D-service-bus 
+               --name D-IPRU-NAMESPACE 
+               --public-network-access Enabled
 
            # Step 2: Send the Message
           #   az servicebus queue message send 
