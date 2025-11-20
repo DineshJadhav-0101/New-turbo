@@ -28,12 +28,12 @@ jobs:
                --public-network-access Enabled
 
            # Step 2: Send the Message
-          #   az servicebus queue message send 
-          #   --resource-group myResourceGroup 
-          #   --namespace-name myNamespace 
-          #   --queue-name myQueue 
-          #   --body '{"refNo": "3ecb684c-b045-4627-90ca-f697e42fa07e"}' 
-          #   --content-type 'application/json'
+             az servicebus queue message send 
+             --resource-group D-service-bus 
+             --namespace-name D-IPRU-NAMESPACE 
+             --queue-name feed-file 
+             --body '${{ github.event.inputs.REF_Number }}' 
+             --content-type 'application/json'
 
        # Step 3: Disable Public Network Access
         #az servicebus namespace update 
