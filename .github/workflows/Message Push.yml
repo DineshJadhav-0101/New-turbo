@@ -1,0 +1,49 @@
+name: Message Push 
+
+on:
+ workflow_dispatch:
+   inputs:
+     REF_Number:
+      description: 'Enter the REF Number'
+      required: true
+      default: '{"key":{ "refNo" : ""}}'
+jobs:
+  Tran-Push :
+    runs-on: ubuntu-latest     
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+        
+      - name: Display REF Number
+        run: echo "The entered REF Number is  ${{ github.event.inputs.REF_Number }}"
+      
+   #   - name: Push Ref Number In Queue
+    #    run: |
+    
+           # Step 1: Enable Public Network Access
+              # az servicebus namespace update 
+             #  --resource-group myResourceGroup 
+            #   --name myNamespace 
+            #   --public-network-access Enabled
+
+           # Step 2: Send the Message
+          #   az servicebus queue message send 
+          #   --resource-group myResourceGroup 
+          #   --namespace-name myNamespace 
+          #   --queue-name myQueue 
+          #   --body '{"refNo": "3ecb684c-b045-4627-90ca-f697e42fa07e"}' 
+          #   --content-type 'application/json'
+
+       # Step 3: Disable Public Network Access
+        #az servicebus namespace update 
+       # --resource-group myResourceGroup 
+       # --name myNamespace 
+       # --public-network-access Disabled
+       
+    #      az servicebus queue message send  
+    #      --queue-name $icici-pru-amc.dev.feed-feed-ready.generate  
+    #      --namespace-name $ipru-preprod-service-chart  
+     #     --resource-group $IPRU-INC-RG-DT-APP-VNET  
+     #     --body '${{ github.event.inputs.REF_Number }}'  
+    #      --content-type 'application/json' 
