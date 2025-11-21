@@ -21,7 +21,7 @@ jobs:
 
       - name: Azure Login
         run: az login --service-principal --username ${{ secrets.AZURE_CLIENT_ID }} --password ${{ secrets.AZURE_CLIENT_SECRET }} --tenant ${{ secrets.AZURE_TENANT_ID }}
-        
+
       - name: Set Azure subscription
         run: az account set --subscription ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
@@ -29,20 +29,23 @@ jobs:
         run: |
           # Step 1: Enable Public Network Access
           az servicebus namespace update \
-           --name Dinesh-Service-Busname \
-           --resource-group D-service-bus \
-           --public-network-access Enabled \
-           --debug
+            --name Dinesh-Service-Busname \
+            --resource-group D-service-bus \
+            --public-network-access Enabled \
+            --debug
 
           # Step 2: Send the Message
-        #   --resource-group D-service-bus \
-        #    --namespace-name Dinesh-Service-Busname \
-        #    --queue-name feed-file \
-        #    --body '${{ github.event.inputs.REF_Number }}' \
-        #    --content-type 'application/json'
+          az servicebus queue send \
+            --resource-group D-service-bus \
+            --namespace-name Dinesh-Service-Busname \
+            --queue-name feed-file \
+            --body '${{ github.event.inputs.REF_Number }}' \
+            --content-type 'application/json'
+
+           sleep 20
 
           # Step 3: Disable Public Network Access
-         # az servicebus namespace update \
-        #    --resource-group D-service-bus \
-        #    --name Dinesh-Service-Busname \
-       #     --public-network-access Disabled  # Reverting to Disabled
+          az servicebus namespace update \
+            --resource-group D-service-bus \
+            --name Dinesh-Service-Busname \
+            --public-network-access Disabled  # Reverting to Disabled
