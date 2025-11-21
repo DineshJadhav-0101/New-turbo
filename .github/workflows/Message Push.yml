@@ -27,7 +27,7 @@ jobs:
           client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
         
       - name: Set Azure subscription
-        run: az account set --subscription da88dd16-869c-47b5-8dec-43b6f64f5004  
+        run: az account set --subscription ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Push Ref Number In Queue
         run: |
