@@ -18,6 +18,13 @@ jobs:
 
       - name: Display REF Number
         run: echo "The entered REF Number is  ${{ github.event.inputs.REF_Number }}"
+
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
         
       - name: Set Azure subscription
         run: az account set --subscription da88dd16-869c-47b5-8dec-43b6f64f5004  
