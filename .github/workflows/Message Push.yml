@@ -6,7 +6,7 @@ on:
       REF_Number:
         description: 'Enter the REF Number'
         required: true
-        default: '{"value": ""}'  # Corrected JSON format
+        default: '{"refNo": ""}'  # Corrected JSON format
 
 jobs:
   Tran-Push:
@@ -42,7 +42,7 @@ jobs:
             --content-type 'application/json'
 
           # Step 3: Disable Public Network Access
-         # az servicebus namespace update \
-         #   --resource-group D-service-bus \
-         #   --name Dinesh-Service-Busname \
-          #  --public-network-access Disabled  # Reverting to Disabled
+          az servicebus namespace update \
+            --resource-group D-service-bus \
+            --name Dinesh-Service-Busname \
+            --public-network-access Disabled  # Reverting to Disabled
