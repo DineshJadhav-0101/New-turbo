@@ -29,9 +29,10 @@ jobs:
         run: |
           # Step 1: Enable Public Network Access
           az servicebus namespace update \
-            --resource-group D-service-bus \
-            --name Dinesh-Service-Busname \
-            --public-network-access Enabled  # Changed to Enabled
+           --name Dinesh-Service-Busname \
+           --resource-group D-service-bus \
+           --public-network-access Enabled \
+           --debug
 
           # Step 2: Send the Message
           az servicebus queue message send \
