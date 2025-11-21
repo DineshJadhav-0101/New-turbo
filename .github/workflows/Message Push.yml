@@ -27,16 +27,7 @@ jobs:
 
       - name: Push Ref Number In Queue
         run: |
-          # Step 1: Enable Public Network Access
-          az servicebus namespace update \
-            --name Dinesh-Service-Busname \
-            --resource-group D-service-bus \
-            --public-network-access Enabled \
-            --debug
-
-      
-
-             sleep 20
+         
 
           # Step 3: Disable Public Network Access
           az servicebus namespace update \
