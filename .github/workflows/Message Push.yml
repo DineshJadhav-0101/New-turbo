@@ -6,7 +6,7 @@ on:
       REF_Number:
         description: 'Enter the REF Number'
         required: true
-        default: '{"key": "refNo" ""}'  # Corrected JSON format
+        default: '{"key": "refNo": ""}'  # Corrected JSON format
 
 jobs:
   Tran-Push:
@@ -31,7 +31,7 @@ jobs:
           az servicebus namespace update \
             --resource-group D-service-bus \
             --name Dinesh-Service-Busname \
-            --public-network-access All
+            --public-network-access Enabled  # Changed to Enabled
 
           # Step 2: Send the Message
           az servicebus queue message send \
@@ -45,4 +45,4 @@ jobs:
           az servicebus namespace update \
             --resource-group D-service-bus \
             --name Dinesh-Service-Busname \
-            --public-network-access Selected
+            --public-network-access Disabled  # Reverting to Disabled
