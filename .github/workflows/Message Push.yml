@@ -6,7 +6,7 @@ on:
       REF_Number:
         description: 'Enter the REF Number'
         required: true
-        default: '{"key": "refNo": ""}'  # Corrected JSON format
+        default: '{"value": ""}'  # Corrected JSON format
 
 jobs:
   Tran-Push:
