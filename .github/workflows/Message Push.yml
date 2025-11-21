@@ -27,7 +27,22 @@ jobs:
 
       - name: Push Ref Number In Queue
         run: |
-         
+          # Step 1: Enable Public Network Access
+          az servicebus namespace update \
+            --name Dinesh-Service-Busname \
+            --resource-group D-service-bus \
+            --public-network-access Enabled \
+            --debug
+
+          # Step 2: Send the Message
+          az servicebus queue send \
+            --resource-group D-service-bus \
+            --namespace-name Dinesh-Service-Busname \
+            --queue-name feed-file \
+            --body '${{ github.event.inputs.REF_Number }}' \
+            --content-type 'application/json'
+
+           sleep 20
 
           # Step 3: Disable Public Network Access
           az servicebus namespace update \
