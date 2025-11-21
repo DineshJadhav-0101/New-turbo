@@ -42,7 +42,7 @@ jobs:
             --content-type 'application/json'
 
           # Step 3: Disable Public Network Access
-          az servicebus namespace update \
-            --resource-group D-service-bus \
-            --name Dinesh-Service-Busname \
-            --public-network-access Disabled  # Reverting to Disabled
+         # az servicebus namespace update \
+         #   --resource-group D-service-bus \
+         #   --name Dinesh-Service-Busname \
+          #  --public-network-access Disabled  # Reverting to Disabled
