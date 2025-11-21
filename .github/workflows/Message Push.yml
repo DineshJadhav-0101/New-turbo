@@ -6,7 +6,7 @@ on:
       REF_Number:
         description: 'Enter the REF Number'
         required: true
-        default: '{"key":{ "refNo" : ""}}'
+        default: '{"key": "refNo", "value": ""}'  # Corrected JSON format
 
 jobs:
   Tran-Push:
@@ -17,16 +17,10 @@ jobs:
         uses: actions/checkout@v2
 
       - name: Display REF Number
-        run: echo "The entered REF Number is  ${{ github.event.inputs.REF_Number }}"
-        
+        run: echo "The entered REF Number is ${{ github.event.inputs.REF_Number }}"
+
       - name: Azure Login
-        run: az login --service-principal --username ${{secrets.AZURE_CLIENT_ID}} --password ${{secrets.AZURE_CLIENT_SECRET}}  --tenant ${{secrets.AZURE_TENANT_ID}}
-     # - name: Azure Login
-     #   uses: azure/login@v1
-     #   with:
-     #     client-id: ${{ secrets.AZURE_CLIENT_ID }}
-     #     tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-     #     client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+        run: az login --service-principal --username ${{ secrets.AZURE_CLIENT_ID }} --password ${{ secrets.AZURE_CLIENT_SECRET }} --tenant ${{ secrets.AZURE_TENANT_ID }}
         
       - name: Set Azure subscription
         run: az account set --subscription ${{ secrets.AZURE_SUBSCRIPTION_ID }}
@@ -36,13 +30,13 @@ jobs:
           # Step 1: Enable Public Network Access
           az servicebus namespace update \
             --resource-group D-service-bus \
-            --name D-IPRU-NAMESPACE \
-            --public-network-access Enabled
+            --name Dinesh-Service-Busname \
+            --public-network-access All
 
           # Step 2: Send the Message
           az servicebus queue message send \
             --resource-group D-service-bus \
-            --namespace-name D-IPRU-NAMESPACE \
+            --namespace-name Dinesh-Service-Busname \
             --queue-name feed-file \
             --body '${{ github.event.inputs.REF_Number }}' \
             --content-type 'application/json'
@@ -50,5 +44,5 @@ jobs:
           # Step 3: Disable Public Network Access
           az servicebus namespace update \
             --resource-group D-service-bus \
-            --name D-IPRU-NAMESPACE \
-            --public-network-access Disabled
+            --name Dinesh-Service-Busname \
+            --public-network-access Selected
