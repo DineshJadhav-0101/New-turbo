@@ -25,25 +25,25 @@ jobs:
       - name: Set Azure subscription
         run: az account set --subscription ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - name: Push Ref Number In Queue
+      - name: Enable Public Network Access (All Networks)
         run: |
-          # Step 1: Enable Public Network Access
           az servicebus namespace update \
             --name Dinesh-Service-Busname \
             --resource-group D-service-bus \
-            --public-network-access Enabled \
-            --debug
+            --public-network-access Enabled
 
-          az servicebus message send \
-          --resource-group D-service-bus \
-          --namespace-name Dinesh-Service-Busname \
-          --queue-name feed-file \
-          --content-type application/json \
-          --body '${{ github.event.inputs.pan_number }}'
-
-
-          # Step 3: Disable Public Network Access
-          az servicebus namespace update \
+      - name: Send message to queue
+        run: |
+          az servicebus queue message send \
             --resource-group D-service-bus \
+            --namespace-name Dinesh-Service-Busname \
+            --queue-name feed-file \
+            --body '{"refNo":"e3870492-b792-4e81-99fa-653e39905c9d"}' \
+            --content-type application/json
+
+      - name: Disable Public Network Access
+        run: |
+          az servicebus namespace update \
             --name Dinesh-Service-Busname \
-            --public-network-access Disabled  # Reverting to Disabled
+            --resource-group D-service-bus \
+            --public-network-access Disabled
