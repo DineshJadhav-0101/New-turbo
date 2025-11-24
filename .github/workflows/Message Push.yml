@@ -34,15 +34,13 @@ jobs:
             --public-network-access Enabled \
             --debug
 
-          # Step 2: Send the Message
-          az servicebus queue send \
-            --resource-group D-service-bus \
-            --namespace-name Dinesh-Service-Busname \
-            --queue-name feed-file \
-            --body '${{ github.event.inputs.REF_Number }}' \
-            --content-type 'application/json'
+          az servicebus message send \
+          --resource-group D-service-bus \
+          --namespace-name Dinesh-Service-Busname \
+          --queue-name <QUEUE_NAME> \
+          --content-type application/json \
+          --body '{"refNo":"e3870492-b792-4e81-99fa-653e39905c9d"}'
 
-           sleep 20
 
           # Step 3: Disable Public Network Access
           az servicebus namespace update \
