@@ -37,9 +37,9 @@ jobs:
           az servicebus message send \
           --resource-group D-service-bus \
           --namespace-name Dinesh-Service-Busname \
-          --queue-name <QUEUE_NAME> \
+          --queue-name feed-file \
           --content-type application/json \
-          --body '{"refNo":"e3870492-b792-4e81-99fa-653e39905c9d"}'
+          --body ${{ github.event.inputs.pan_number }}
 
 
           # Step 3: Disable Public Network Access
