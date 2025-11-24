@@ -39,7 +39,7 @@ jobs:
           --namespace-name Dinesh-Service-Busname \
           --queue-name feed-file \
           --content-type application/json \
-          --body ${{ github.event.inputs.pan_number }}
+          --body '${{ github.event.inputs.pan_number }}'
 
 
           # Step 3: Disable Public Network Access
