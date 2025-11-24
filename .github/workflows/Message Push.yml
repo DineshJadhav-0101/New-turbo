@@ -34,7 +34,7 @@ jobs:
 
       - name: Send message to queue using REST API
         run: |
-          SAS_TOKEN=<Your SAS Token Here>
+          SAS_TOKEN=/subscriptions/da88dd16-869c-47b5-8dec-43b6f64f5004/resourceGroups/D-service-bus/providers/Microsoft.ServiceBus/namespaces/Dinesh-Service-Busname/authorizationrules/private-end-point
           az rest --method post \
             --url "https://Dinesh-Service-Busname.servicebus.windows.net/feed-file/messages?timeout=60" \
             --headers "Content-Type=application/json" \
