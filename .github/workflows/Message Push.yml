@@ -32,14 +32,14 @@ jobs:
             --resource-group D-service-bus \
             --public-network-access Enabled
 
-      - name: Send message to queue
+      - name: Send message to queue using REST API
         run: |
-          az servicebus queue message send \
-            --resource-group D-service-bus \
-            --namespace-name Dinesh-Service-Busname \
-            --queue-name feed-file \
+          SAS_TOKEN=<Your SAS Token Here>
+          az rest --method post \
+            --url "https://Dinesh-Service-Busname.servicebus.windows.net/feed-file/messages?timeout=60" \
+            --headers "Content-Type=application/json" \
             --body '{"refNo":"e3870492-b792-4e81-99fa-653e39905c9d"}' \
-            --content-type application/json
+            --headers "Authorization=SharedAccessSignature $SAS_TOKEN"
 
       - name: Disable Public Network Access
         run: |
