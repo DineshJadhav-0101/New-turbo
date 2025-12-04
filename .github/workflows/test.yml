@@ -28,49 +28,48 @@ jobs:
         run: az login --service-principal --username ${{ secrets.AZURE_CLIENT_ID }} --password ${{ secrets.AZURE_CLIENT_SECRET }} --tenant ${{ secrets.AZURE_TENANT_ID }}
 
       # Step 4: Get the APIs and Operations in APIM and update the backend URL
+          # Step 4: Get the APIs and Operations in APIM and update the backend URL
       - name: Update backend URL for API operations
         run: |
-          # Correctly assign the environment variables
           resource_group="${{ env.RESOURCE_GROUP }}"
           apim_service_name="${{ env.APIM_SERVICE_NAME }}"
           old_backend_url="${{ env.OLD_BACKEND_URL }}"
           new_backend_url="${{ env.NEW_BACKEND_URL }}"
 
-          # Output the values to check if they're correctly passed
           echo "Resource Group: $resource_group"
           echo "APIM Service Name: $apim_service_name"
           echo "Old Backend URL: $old_backend_url"
           echo "New Backend URL: $new_backend_url"
 
-          # Get all APIs in the APIM instance
           apis=$(az apim api list --resource-group "$resource_group" --service-name "$apim_service_name" --query "[].id" -o tsv)
 
-          # Iterate through each API and its operations
           for api in $apis; do
-              # Get all operations for the API
               operations=$(az apim api operation list --resource-group "$resource_group" --service-name "$apim_service_name" --api-id "$(basename "$api")" --query "[].id" -o tsv)
 
-              # Iterate through each operation
               for operation in $operations; do
-                  # Get the operation details
                   operation_details=$(az apim api operation show --resource-group "$resource_group" --service-name "$apim_service_name" --api-id "$(basename "$api")" --operation-id "$(basename "$operation")" -o json)
 
-                  # Extract the current backend URL
+                  # Check the correct property for the backend URL
                   current_backend_url=$(echo "$operation_details" | jq -r '.request.url')
 
-                  # Check if the current backend URL matches the old one and update it
+                  echo "Current backend URL for API: $(basename "$api"), Operation: $(basename "$operation") is $current_backend_url"
+
                   if [[ "$current_backend_url" == "$old_backend_url" ]]; then
                       echo "Updating backend URL for API: $(basename "$api"), Operation: $(basename "$operation")"
 
-                      # Update the backend URL with the new one
-                      az apim api operation update \
+                      # Update the backend URL
+                      update_result=$(az apim api operation update \
                           --resource-group "$resource_group" \
                           --service-name "$apim_service_name" \
                           --api-id "$(basename "$api")" \
                           --operation-id "$(basename "$operation")" \
-                          --set request.url="$new_backend_url"
+                          --set request.url="$new_backend_url" 2>&1)
+
+                      if [[ $? -ne 0 ]]; then
+                          echo "Failed to update backend URL: $update_result"
+                      else
+                          echo "Successfully updated backend URL for API: $(basename "$api"), Operation: $(basename "$operation")"
+                      fi
                   fi
               done
           done
-        env:
-          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
