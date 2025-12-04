@@ -1,10 +1,7 @@
-name: Update APIM Backend URL
+name: BCP-Test
 
 # Trigger the workflow on push or manually
 on:
-  push:
-    branches:
-      - main   # or your main branch name
   workflow_dispatch:   # Allows for manual trigger
 
 jobs:
@@ -28,7 +25,6 @@ jobs:
         run: az login --service-principal --username ${{ secrets.AZURE_CLIENT_ID }} --password ${{ secrets.AZURE_CLIENT_SECRET }} --tenant ${{ secrets.AZURE_TENANT_ID }}
 
       # Step 4: Get the APIs and Operations in APIM and update the backend URL
-          # Step 4: Get the APIs and Operations in APIM and update the backend URL
       - name: Update backend URL for API operations
         run: |
           resource_group="${{ env.RESOURCE_GROUP }}"
@@ -41,16 +37,24 @@ jobs:
           echo "Old Backend URL: $old_backend_url"
           echo "New Backend URL: $new_backend_url"
 
+          # Get all APIs in the APIM instance
           apis=$(az apim api list --resource-group "$resource_group" --service-name "$apim_service_name" --query "[].id" -o tsv)
 
+          # Iterate through each API
           for api in $apis; do
+              # Get all operations for the API
               operations=$(az apim api operation list --resource-group "$resource_group" --service-name "$apim_service_name" --api-id "$(basename "$api")" --query "[].id" -o tsv)
 
+              # Iterate through each operation
               for operation in $operations; do
+                  # Get operation details
                   operation_details=$(az apim api operation show --resource-group "$resource_group" --service-name "$apim_service_name" --api-id "$(basename "$api")" --operation-id "$(basename "$operation")" -o json)
 
+                  # Debug: Print the entire operation details
+                  echo "Operation details: $operation_details"
+
                   # Check the correct property for the backend URL
-                  current_backend_url=$(echo "$operation_details" | jq -r '.request.url')
+                  current_backend_url=$(echo "$operation_details" | jq -r '.serviceUrl')  # Adjust this line based on the actual property
 
                   echo "Current backend URL for API: $(basename "$api"), Operation: $(basename "$operation") is $current_backend_url"
 
