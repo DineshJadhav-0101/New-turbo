@@ -12,8 +12,8 @@ jobs:
       # Define environment variables for the resource group, APIM service, old and new backend URLs
       RESOURCE_GROUP: "Dinesh-Test-resource-Group"
       APIM_SERVICE_NAME: "APIM-TESTNG"
-      OLD_BACKEND_URL: "https://dinesttest2.com"
-      NEW_BACKEND_URL: "https://dinesttest1.com"
+      OLD_BACKEND_URL: "https://dinesttest1.com"
+      NEW_BACKEND_URL: "https://dinesttest2.com"
 
     steps:
       # Step 1: Checkout the repository code
