@@ -1,8 +1,11 @@
-name: TestBcp
+name: Update APIM Backend URL
 
 # Trigger the workflow on push or manually
 on:
- workflow_dispatch:   # Allows for manual trigger
+  push:
+    branches:
+      - main   # or your main branch name
+  workflow_dispatch:   # Allows for manual trigger
 
 jobs:
   update-apim-backend-url:
@@ -20,7 +23,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v2
 
-       # Step 3: Azure Login using Service Principal
+      # Step 3: Azure Login using Service Principal
       - name: Azure Login
         run: az login --service-principal --username ${{ secrets.AZURE_CLIENT_ID }} --password ${{ secrets.AZURE_CLIENT_SECRET }} --tenant ${{ secrets.AZURE_TENANT_ID }}
 
@@ -55,11 +58,11 @@ jobs:
                   # Extract the current backend URL
                   current_backend_url=$(echo "$operation_details" | jq -r '.request.url')
 
-                  # If the backend URL matches the old one, update it
-                  if [ "$current_backend_url" == "$old_backend_url" ]; then
+                  # Check if the current backend URL matches the old one and update it
+                  if [[ "$current_backend_url" == "$old_backend_url" ]]; then
                       echo "Updating backend URL for API: $(basename "$api"), Operation: $(basename "$operation")"
-                      
-                      # Update the backend URL
+
+                      # Update the backend URL with the new one
                       az apim api operation update \
                           --resource-group "$resource_group" \
                           --service-name "$apim_service_name" \
