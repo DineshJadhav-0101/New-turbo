@@ -2,10 +2,7 @@ name: TestBcp
 
 # Trigger the workflow on push or manually
 on:
-  push:
-    branches:
-      - main   # or your main branch name
-  workflow_dispatch:   # Allows for manual trigger
+ workflow_dispatch:   # Allows for manual trigger
 
 jobs:
   update-apim-backend-url:
