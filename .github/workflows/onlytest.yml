@@ -2,7 +2,10 @@ name: Update APIM Backend URL
 
 # Trigger the workflow on push or manually
 on:
-  workflow_dispatch:
+  push:
+    branches:
+      - main   # or your main branch name
+  workflow_dispatch:   # Allows for manual trigger
 
 jobs:
   update-apim-backend-url:
@@ -20,18 +23,24 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v2
 
+      # Step 2: Set up Azure CLI
+      - name: Set up Azure CLI
+        uses: azure/setup-azure-cli@v1
+
       # Step 3: Azure Login using Service Principal
-      - name: Azure Login
-        run: az login --service-principal --username ${{ secrets.AZURE_CLIENT_ID }} --password ${{ secrets.AZURE_CLIENT_SECRET }} --tenant ${{ secrets.AZURE_TENANT_ID }}
+      - name: Azure login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
 
       # Step 4: Get the APIs and Operations in APIM and update the backend URL
       - name: Update backend URL for API operations
         run: |
-          # Use environment variables defined above
-          resource_group="${{ env.RESOURCE_GROUP }}"\
-            --apim_service_name="${{ env.APIM_SERVICE_NAME }}"
-            --old_backend_url="${{ env.OLD_BACKEND_URL }}"
-            --new_backend_url="${{ env.NEW_BACKEND_URL }}"
+          # Correctly assign the environment variables
+          resource_group="${{ env.RESOURCE_GROUP }}"
+          apim_service_name="${{ env.APIM_SERVICE_NAME }}"
+          old_backend_url="${{ env.OLD_BACKEND_URL }}"
+          new_backend_url="${{ env.NEW_BACKEND_URL }}"
 
           # Output the values to check if they're correctly passed
           echo "Resource Group: $resource_group"
@@ -40,31 +49,31 @@ jobs:
           echo "New Backend URL: $new_backend_url"
 
           # Get all APIs in the APIM instance
-          apis=$(az apim api list --resource-group $resource_group --service-name $apim_service_name --query "[].id" -o tsv)
+          apis=$(az apim api list --resource-group "$resource_group" --service-name "$apim_service_name" --query "[].id" -o tsv)
 
           # Iterate through each API and its operations
           for api in $apis; do
               # Get all operations for the API
-              operations=$(az apim api operation list --resource-group $resource_group --service-name $apim_service_name --api-id $(basename $api) --query "[].id" -o tsv)
+              operations=$(az apim api operation list --resource-group "$resource_group" --service-name "$apim_service_name" --api-id "$(basename "$api")" --query "[].id" -o tsv)
 
               # Iterate through each operation
               for operation in $operations; do
                   # Get the operation details
-                  operation_details=$(az apim api operation show --resource-group $resource_group --service-name $apim_service_name --api-id $(basename $api) --operation-id $(basename $operation) -o json)
+                  operation_details=$(az apim api operation show --resource-group "$resource_group" --service-name "$apim_service_name" --api-id "$(basename "$api")" --operation-id "$(basename "$operation")" -o json)
 
                   # Extract the current backend URL
-                  current_backend_url=$(echo $operation_details | jq -r '.request.url')
+                  current_backend_url=$(echo "$operation_details" | jq -r '.request.url')
 
                   # If the backend URL matches the old one, update it
                   if [ "$current_backend_url" == "$old_backend_url" ]; then
-                      echo "Updating backend URL for API: $(basename $api), Operation: $(basename $operation)"
+                      echo "Updating backend URL for API: $(basename "$api"), Operation: $(basename "$operation")"
                       
                       # Update the backend URL
                       az apim api operation update \
-                          --resource-group $resource_group \
-                          --service-name $apim_service_name \
-                          --api-id $(basename $api) \
-                          --operation-id $(basename $operation) \
+                          --resource-group "$resource_group" \
+                          --service-name "$apim_service_name" \
+                          --api-id "$(basename "$api")" \
+                          --operation-id "$(basename "$operation")" \
                           --set request.url="$new_backend_url"
                   fi
               done
