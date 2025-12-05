@@ -11,7 +11,7 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v3
 
-    - name: Azure Login
+    - name: Azure Login + APIM Extension
       env:
         AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
         AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
@@ -21,8 +21,10 @@ jobs:
           --username "$AZURE_CLIENT_ID" \
           --password "$AZURE_CLIENT_SECRET" \
           --tenant "$AZURE_TENANT_ID"
+        echo "📦 Installing APIM extension..."
+        az extension add --name apim --yes
 
-    - name: Update Backend URLs (Error-Proof)
+    - name: Update Backend URLs (Error-Free XML)
       shell: bash
       env:
         RESOURCE_GROUP: "Dinesh-Test-resource-Group"
@@ -54,7 +56,7 @@ jobs:
             --output xml > "$TMP"
 
           if ! grep -q "$OLD_URL" "$TMP"; then
-            echo "⏭️ Old URL not found, skipping..."
+            echo "⏭️ URL not found in policy - skipping"
             rm -f "$TMP"
             continue
           fi
