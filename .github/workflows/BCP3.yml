@@ -53,34 +53,39 @@ jobs:
         for op in $OP_IDS; do
           echo "🔍 Processing $op"
           ENCODED_OP=$(urlencode "$op")
-
           POLICY_URI="https://management.azure.com/subscriptions/$SUBS_ID/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.ApiManagement/service/$APIM_NAME/apis/$API_ID/operations/$ENCODED_OP/policies/policy?api-version=$API_VERSION"
 
           TMP=$(mktemp)
 
-          # Download existing XML
+          echo "📥 Getting existing full policy XML"
           if ! az rest --method get --uri "$POLICY_URI" --headers Accept=application/xml --output-file "$TMP" >/dev/null 2>&1; then
-            echo "⚠ No policy exists for $op. Skipping..."
-            rm -f "$TMP"
-            continue
-          fi
-
-          echo "🧹 Removing any existing set-backend-service entries"
-          sed -i '/<set-backend-service[^>]*>/d' "$TMP"
-
-          echo "➕ Adding new forced base-url for $op"
-          if grep -q "<base" "$TMP"; then
-            # add AFTER <base />
-            sed -i "/<base[[:space:]]*\/>/a <set-backend-service base-url=\"$NEW_URL\" />" "$TMP"
-          elif grep -q "</inbound>" "$TMP"; then
-            # add BEFORE closing inbound
-            sed -i "/<\/inbound>/i <set-backend-service base-url=\"$NEW_URL\" />" "$TMP"
+            echo "⚠ No policy exists for $op. Creating full policy..."
+            cat <<EOF > "$TMP"
+<policies>
+  <inbound>
+    <base />
+    <set-backend-service base-url="$NEW_URL" />
+  </inbound>
+  <backend>
+    <base />
+  </backend>
+  <outbound>
+    <base />
+  </outbound>
+  <on-error>
+    <base />
+  </on-error>
+</policies>
+EOF
           else
-            # no inbound? Add at top
-            sed -i "1i <set-backend-service base-url=\"$NEW_URL\" />" "$TMP"
+            echo "🧹 Removing old set-backend-service from $op"
+            sed -i '/<set-backend-service[^>]*>/d' "$TMP"
+
+            echo "➕ Inserting new base-url"
+            sed -i '/<inbound>/a \    <set-backend-service base-url="'"$NEW_URL"'" />' "$TMP"
           fi
 
-          echo "🚀 Uploading updated XML..."
+          echo "🚀 Uploading updated FULL XML"
           if ! az rest --method put --uri "$POLICY_URI" --body @"$TMP" >/dev/null 2>&1; then
             echo "⚠ Failed to update $op"
           else
@@ -90,4 +95,4 @@ jobs:
           rm -f "$TMP"
         done
 
-        echo "🎉 DONE! All operations now directly use base-url instead of backend-id"
+        echo "🎉 FINISHED! All set-backend-service now forced to $NEW_URL"
