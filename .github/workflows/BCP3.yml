@@ -19,7 +19,8 @@ jobs:
       RESOURCE_GROUP: "Dinesh-Test-resource-Group"
       APIM_NAME: "APIM-TESTNGT"
       API_ID: "TestUrl"
-      # 👇 Change these to your actual URLs
+
+      # 👉 ONLY operation switching
       PROD_URL: "http://dinesh.com"
       DR_URL: "http://dinesh1.com"
       API_VERSION: "2022-08-01"
@@ -31,19 +32,14 @@ jobs:
         AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
         AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
       run: |
-        set -euo pipefail
         az login --service-principal \
           --username "$AZURE_CLIENT_ID" \
           --password "$AZURE_CLIENT_SECRET" \
           --tenant "$AZURE_TENANT_ID"
 
-    - name: DR Switch - Decide FROM and TO URLs
+    - name: Decide URLs for Switch
       id: decide
       run: |
-        set -euo pipefail
-
-        echo "Direction: ${{ github.event.inputs.direction }}"
-
         if [ "${{ github.event.inputs.direction }}" = "prod-to-dr" ]; then
           FROM_URL="$PROD_URL"
           TO_URL="$DR_URL"
@@ -51,49 +47,18 @@ jobs:
           FROM_URL="$DR_URL"
           TO_URL="$PROD_URL"
         fi
-
         echo "FROM_URL=$FROM_URL" >> $GITHUB_OUTPUT
         echo "TO_URL=$TO_URL" >> $GITHUB_OUTPUT
 
-    - name: Update API serviceUrl (HTTPs endpoint)
+    - name: Switch Operation Backend Policies Only
       env:
         FROM_URL: ${{ steps.decide.outputs.FROM_URL }}
         TO_URL: ${{ steps.decide.outputs.TO_URL }}
       run: |
         set -euo pipefail
-
-        echo "📌 Current API backend URL (serviceUrl)..."
-        CURRENT_URL=$(az apim api show \
-          --resource-group "$RESOURCE_GROUP" \
-          --service-name "$APIM_NAME" \
-          --api-id "$API_ID" \
-          --query "serviceUrl" -o tsv)
-
-        echo "Current serviceUrl: $CURRENT_URL"
-        echo "Switching FROM: $FROM_URL  TO: $TO_URL"
-
-        if [ "$CURRENT_URL" != "$TO_URL" ]; then
-          echo "✏ Updating API serviceUrl to $TO_URL"
-          az apim api update \
-            --resource-group "$RESOURCE_GROUP" \
-            --service-name "$APIM_NAME" \
-            --api-id "$API_ID" \
-            --set serviceUrl="$TO_URL"
-          echo "✔ API serviceUrl updated."
-        else
-          echo "✅ API serviceUrl already set to $TO_URL. Skipping."
-        fi
-
-    - name: Update operation policies URLs
-      env:
-        FROM_URL: ${{ steps.decide.outputs.FROM_URL }}
-        TO_URL: ${{ steps.decide.outputs.TO_URL }}
-      run: |
-        set -euo pipefail
-
         SUBS_ID=$(az account show --query id -o tsv)
 
-        echo "📌 Fetching all operation IDs..."
+        echo "📌 Fetching all operations in API $API_ID..."
         OP_IDS=$(az apim api operation list \
           --resource-group "$RESOURCE_GROUP" \
           --service-name "$APIM_NAME" \
@@ -111,37 +76,36 @@ jobs:
         }
 
         for op in $OP_IDS; do
-          echo "🔍 Processing operation: $op"
+          echo "🔍 Checking operation: $op"
           ENCODED_OP=$(urlencode "$op")
-
           POLICY_URI="https://management.azure.com/subscriptions/$SUBS_ID/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.ApiManagement/service/$APIM_NAME/apis/$API_ID/operations/$ENCODED_OP/policies/policy?api-version=$API_VERSION"
 
           TMP=$(mktemp)
 
-          echo "📥 Fetching policy XML (if exists)..."
           if ! az rest --method get --uri "$POLICY_URI" --headers Accept=application/xml --output-file "$TMP" >/dev/null 2>&1; then
-            echo "⚠ No policy found for $op. Skipping."
+            echo "⚠ No policy exists for $op — skipping"
             rm -f "$TMP"
             continue
           fi
 
+          # Only update if the URL is found
           if ! grep -q "$FROM_URL" "$TMP"; then
-            echo "⏭ FROM_URL not found in $op policy. Skipping."
+            echo "⏭ URL not found in $op policy — skip"
             rm -f "$TMP"
             continue
           fi
 
-          echo "✏ Replacing $FROM_URL -> $TO_URL in $op policy..."
+          echo "✏ Replacing $FROM_URL → $TO_URL in $op"
           sed -i "s|$FROM_URL|$TO_URL|g" "$TMP"
 
-          echo "🚀 Uploading updated policy for $op..."
+          echo "🚀 Uploading updated policy..."
           if ! az rest --method put --uri "$POLICY_URI" --body @"$TMP" >/dev/null 2>&1; then
-            echo "⚠ Failed to update policy for $op"
+            echo "❌ Failed to update $op"
           else
-            echo "✔ Policy updated for $op"
+            echo "✔ Updated policy for $op"
           fi
 
           rm -f "$TMP"
         done
 
-        echo "🎉 DR switch complete for API $API_ID."
+        echo "🎉 DR switch complete — only operation backend URLs updated!"
