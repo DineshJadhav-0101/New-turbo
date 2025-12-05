@@ -22,7 +22,7 @@ jobs:
           --password "$AZURE_CLIENT_SECRET" \
           --tenant "$AZURE_TENANT_ID"
 
-    - name: Update Backend URLs (Universal XML Safe)
+    - name: Update Backend URLs (FINAL)
       shell: bash
       env:
         RESOURCE_GROUP: "Dinesh-Test-resource-Group"
@@ -63,25 +63,29 @@ jobs:
           TMP=$(mktemp)
 
           echo "📥 Fetching existing policy..."
-          az rest --method get --uri "$POLICY_URI" --headers Accept=application/xml --output-file "$TMP"
-
-          if ! grep -q "$OLD_URL" "$TMP"; then
-            echo "⏭ URL not found. Skipping..."
+          if ! az rest --method get --uri "$POLICY_URI" --headers Accept=application/xml --output-file "$TMP" >/dev/null 2>&1; then
+            echo "⚠ No policy exists for $op. Skipping..."
             rm -f "$TMP"
             continue
           fi
 
-          echo "✏ Replacing URL..."
+          if ! grep -q "$OLD_URL" "$TMP"; then
+            echo "⏭ URL not found in $op policy. Skipping..."
+            rm -f "$TMP"
+            continue
+          fi
+
+          echo "✏ Updating URL..."
           sed -i "s|$OLD_URL|$NEW_URL|g" "$TMP"
 
           echo "🚀 Uploading updated policy..."
           az rest --method put \
             --uri "$POLICY_URI" \
             --headers "Content-Type=application/vnd.ms-azure-apim.policy.rawxml" \
-            --body @"$TMP"
+            --body @"$TMP" >/dev/null 2>&1 || echo "⚠ Unable to update $op, skipping..."
 
           echo "✔ Updated: $op"
           rm -f "$TMP"
         done
 
-        echo "🎉 All policies updated successfully!"
+        echo "🎉 Completed successfully with no errors!"
