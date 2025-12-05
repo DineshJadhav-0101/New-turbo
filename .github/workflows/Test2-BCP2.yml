@@ -21,7 +21,8 @@ jobs:
           --username "$AZURE_CLIENT_ID" \
           --password "$AZURE_CLIENT_SECRET" \
           --tenant "$AZURE_TENANT_ID"
-    - name: Update Backend URLs (Safe XML/JSON)
+
+    - name: Update Backend URLs (Error-Proof)
       shell: bash
       env:
         RESOURCE_GROUP: "Dinesh-Test-resource-Group"
@@ -29,55 +30,48 @@ jobs:
         API_ID: "TestUrl"
         OLD_URL: "http://dinesh.com"
         NEW_URL: "https://dinesh1.com"
-        API_VERSION: "2024-05-01"
       run: |
         set -euo pipefail
-        echo "🔐 Getting subscription ID..."
-        SUBS_ID=$(az account show --query id -o tsv)
-        echo "📌 Fetching operations list..."
+
+        echo "📌 Fetching operations..."
         OP_IDS=$(az apim api operation list \
           --resource-group "$RESOURCE_GROUP" \
           --service-name "$APIM_NAME" \
           --api-id "$API_ID" \
-          -o json | jq -r '.[].name')
-        urlencode() {
-          local length="${#1}"
-          for (( i = 0; i < length; i++ )); do
-            local c="${1:i:1}"
-            case $c in
-              [a-zA-Z0-9.~_-]) printf "$c" ;;
-              *) printf '%%%02X' "'$c" ;;
-            esac
-          done
-        }
+          --query "[].name" -o tsv)
+
         for op in $OP_IDS; do
           echo "🔍 Processing: $op"
-          ENCODED_OP=$(urlencode "$op")
-          URI="https://management.azure.com/subscriptions/$SUBS_ID/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.ApiManagement/service/$APIM_NAME/apis/$API_ID/operations/$ENCODED_OP/policies/policy?api-version=$API_VERSION"
-          # Single GET request
-          RAW_RESPONSE=$(az rest --method get --uri "$URI" --output tsv 2>/dev/null || true)
-          if [[ "$RAW_RESPONSE" == "<"* ]]; then
-            echo "📎 XML policy detected"
-            POLICY_VALUE="$RAW_RESPONSE"
-          else
-            echo "📎 JSON policy detected"
-            POLICY_VALUE=$(az rest --method get --uri "$URI" -o json | jq -r '.properties.value // empty')
-          fi
-          if [[ -z "$POLICY_VALUE" ]]; then
-            echo "⚠️ Empty policy. Skipping..."
+
+          TMP=$(mktemp)
+
+          echo "📥 Fetching existing policy..."
+          az apim api operation policy show \
+            --resource-group "$RESOURCE_GROUP" \
+            --service-name "$APIM_NAME" \
+            --api-id "$API_ID" \
+            --operation-id "$op" \
+            --output xml > "$TMP"
+
+          if ! grep -q "$OLD_URL" "$TMP"; then
+            echo "⏭️ Old URL not found, skipping..."
+            rm -f "$TMP"
             continue
           fi
-          if ! echo "$POLICY_VALUE" | grep -q "$OLD_URL"; then
-            echo "⏭️ URL not present. Skipping..."
-            continue
-          fi
+
           echo "✏️ Updating URL..."
-          UPDATED_POLICY=$(echo "$POLICY_VALUE" | sed "s|${OLD_URL}|${NEW_URL}|g")
-          BODY=$(jq -n --arg v "$UPDATED_POLICY" '{properties:{value:$v, format:"rawxml"}}')
+          sed -i "s|${OLD_URL}|${NEW_URL}|g" "$TMP"
+
           echo "🚀 Uploading updated policy..."
-          az rest --method put --uri "$URI" \
-            --headers "Content-Type=application/json" \
-            --body "$BODY"
+          az apim api operation policy update \
+            --resource-group "$RESOURCE_GROUP" \
+            --service-name "$APIM_NAME" \
+            --api-id "$API_ID" \
+            --operation-id "$op" \
+            --value @"$TMP"
+
           echo "✔ Updated Operation: $op"
+          rm -f "$TMP"
         done
+
         echo "🎉 All operations processed successfully!"
