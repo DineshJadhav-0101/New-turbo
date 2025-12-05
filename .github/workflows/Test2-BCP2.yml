@@ -12,56 +12,87 @@ jobs:
       uses: actions/checkout@v3
 
     - name: Azure Login
+      env:
+        AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+        AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
       run: |
         az login --service-principal \
-          --username ${{ secrets.AZURE_CLIENT_ID }} \
-          --password ${{ secrets.AZURE_CLIENT_SECRET }} \
-          --tenant ${{ secrets.AZURE_TENANT_ID }}
+          --username "$AZURE_CLIENT_ID" \
+          --password "$AZURE_CLIENT_SECRET" \
+          --tenant "$AZURE_TENANT_ID"
 
-    - name: Update Backend URLs
+    - name: Update Backend URLs (via REST)
       shell: bash
+      env:
+        RESOURCE_GROUP: "Dinesh-Test-resource-Group"
+        APIM_NAME: "APIM-TESTNGT"
+        API_ID: "TestUrl"
+        OLD_URL: "http://dinesh.com"
+        NEW_URL: "https://dinesh1.com"
+        API_VERSION: "2024-05-01"
       run: |
-        RESOURCE_GROUP="Dinesh-Test-resource-Group"
-        APIM_NAME="APIM-TESTNGT"
-        API_ID="TestUrl"
+        set -euo pipefail
 
-        OLD_URL="http://dinesh.com"
-        NEW_URL="https://dinesh1.com"
+        echo "Getting subscription ID..."
+        SUBS_ID=$(az account show --query id -o tsv)
+        echo "Subscription: $SUBS_ID"
 
-        echo "Getting operations for API: $API_ID..."
-
-        OPERATIONS=$(az apim api operation list \
+        echo "Fetching operations for API: $API_ID"
+        OPERATIONS_JSON=$(az apim api operation list \
           --resource-group "$RESOURCE_GROUP" \
           --service-name "$APIM_NAME" \
-          --api-id "$API_ID" \
-          --query "[].name" -o tsv)
+          --api-id "$API_ID" -o json)
 
-        for op in $OPERATIONS; do
-          echo "Checking operation: $op..."
+        OP_IDS=$(echo "$OPERATIONS_JSON" | jq -r '.[].name // empty')
 
-          # Correct command (no extension required)
-          POLICY=$(az apim api operation policy get \
-            --resource-group "$RESOURCE_GROUP" \
-            --service-name "$APIM_NAME" \
-            --api-id "$API_ID" \
-            --operation-id "$op" \
-            --query "value" -o tsv)
+        if [ -z "$OP_IDS" ]; then
+          echo "No operations found. Exiting."
+          exit 0
+        fi
 
-          if echo "$POLICY" | grep -q "$OLD_URL"; then
-            echo "Found old backend URL in $op ✔ Updating..."
+        for op in $OP_IDS; do
+          echo "Processing operation: $op"
 
-            UPDATED=$(echo "$POLICY" | sed "s#$OLD_URL#$NEW_URL#g")
-            echo "$UPDATED" > updated-policy.xml
+          ENCODED_OP=$(python3 - <<PY
+            import urllib.parse, sys
+            print(urllib.parse.quote(sys.stdin.read().strip(), safe=''))
+            PY
+            <<< "$op")
 
-            az apim api operation policy update \
-              --resource-group "$RESOURCE_GROUP" \
-              --service-name "$APIM_NAME" \
-              --api-id "$API_ID" \
-              --operation-id "$op" \
-              --policy-file "updated-policy.xml"
+          URI="https://management.azure.com/subscriptions/$SUBS_ID/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.ApiManagement/service/$APIM_NAME/apis/$API_ID/operations/$ENCODED_OP/policies/policy?api-version=$API_VERSION"
 
-            echo "Updated backend for operation: $op ✔"
-          else
-            echo "Operation $op does not use $OLD_URL — skipped"
+          echo "Fetching policy..."
+          GET_RESP=$(az rest --method get --uri "$URI" -o json 2>/dev/null || true)
+
+          if [ -z "$GET_RESP" ] || [ "$GET_RESP" = "null" ]; then
+            echo "No policy found — skipping $op"
+            continue
           fi
+
+          POLICY_VALUE=$(echo "$GET_RESP" | jq -r '.properties.value // empty')
+
+          if [ -z "$POLICY_VALUE" ]; then
+            echo "Policy exists but no XML value — skipping"
+            continue
+          fi
+
+          if ! echo "$POLICY_VALUE" | grep -q "$OLD_URL"; then
+            echo "Old URL not found in $op — skipping"
+            continue
+          fi
+
+          echo "Old URL found — updating..."
+          UPDATED_POLICY=$(echo "$POLICY_VALUE" | sed "s#$OLD_URL#$NEW_URL#g")
+
+          BODY=$(jq -n --arg v "$UPDATED_POLICY" '{properties: {value: $v, format: "rawxml"}}')
+
+          echo "Updating policy for $op..."
+          az rest --method put --uri "$URI" \
+            --body "$BODY" \
+            --headers "Content-Type=application/json" -o none
+
+          echo "Updated policy for $op ✔"
         done
+
+        echo "Completed updating backend URLs."
