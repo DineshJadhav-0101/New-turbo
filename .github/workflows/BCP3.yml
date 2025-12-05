@@ -19,7 +19,7 @@ jobs:
           --password "$AZURE_CLIENT_SECRET" \
           --tenant "$AZURE_TENANT_ID"
 
-    - name: Remove backend-id and Force Replace with base-url
+    - name: Force Replace set-backend-service in Operation Policies
       shell: bash
       env:
         RESOURCE_GROUP: "Dinesh-Test-resource-Group"
@@ -30,7 +30,6 @@ jobs:
         API_VERSION: "2022-08-01"
       run: |
         set -euo pipefail
-
         SUBS_ID=$(az account show --query id -o tsv)
 
         echo "📌 Fetching all operations..."
@@ -57,42 +56,46 @@ jobs:
 
           TMP=$(mktemp)
 
-          echo "📥 Getting existing full policy XML"
+          echo "📥 Downloading existing XML policy (if exists)"
           if ! az rest --method get --uri "$POLICY_URI" --headers Accept=application/xml --output-file "$TMP" >/dev/null 2>&1; then
-            echo "⚠ No policy exists for $op. Creating full policy..."
-cat > "$TMP" <<EOF
-<policies>
-  <inbound>
-    <base />
-    <set-backend-service base-url="$NEW_URL" />
-  </inbound>
-  <backend>
-    <base />
-  </backend>
-  <outbound>
-    <base />
-  </outbound>
-  <on-error>
-    <base />
-  </on-error>
-</policies>
-EOF
+            echo "⚠ No policy exists for $op — Creating fresh one"
+            echo "<policies>" > "$TMP"
+            echo "  <inbound>" >> "$TMP"
+            echo "    <base />" >> "$TMP"
+            echo "    <set-backend-service base-url=\"$NEW_URL\" />" >> "$TMP"
+            echo "  </inbound>" >> "$TMP"
+            echo "  <backend><base /></backend>" >> "$TMP"
+            echo "  <outbound><base /></outbound>" >> "$TMP"
+            echo "  <on-error><base /></on-error>" >> "$TMP"
+            echo "</policies>" >> "$TMP"
           else
-            echo "🧹 Removing old set-backend-service from $op"
+            echo "🧹 Removing existing <set-backend-service> tag"
             sed -i '/<set-backend-service[^>]*>/d' "$TMP"
 
-            echo "➕ Inserting new base-url"
-            sed -i '/<inbound>/a \    <set-backend-service base-url="'"$NEW_URL"'" />' "$TMP"
+            echo "➕ Adding new <set-backend-service base-url> tag"
+            # If inbound exists, insert inside it
+            if grep -q "<inbound>" "$TMP"; then
+              sed -i "/<inbound>/a \    <set-backend-service base-url=\"$NEW_URL\" />" "$TMP"
+            else
+              # No inbound? add whole inbound block at top
+              echo "<policies>" > "$TMP.new"
+              echo "  <inbound>" >> "$TMP.new"
+              echo "    <base />" >> "$TMP.new"
+              echo "    <set-backend-service base-url=\"$NEW_URL\" />" >> "$TMP.new"
+              echo "  </inbound>" >> "$TMP.new"
+              sed -n '1,${p}' "$TMP" >> "$TMP.new"
+              mv "$TMP.new" "$TMP"
+            fi
           fi
 
-          echo "🚀 Uploading updated FULL XML"
+          echo "🚀 Uploading updated FULL XML for $op"
           if ! az rest --method put --uri "$POLICY_URI" --body @"$TMP" >/dev/null 2>&1; then
             echo "⚠ Failed to update $op"
           else
-            echo "✔ Updated $op"
+            echo "✔ Successfully updated $op"
           fi
 
           rm -f "$TMP"
         done
 
-        echo "🎉 FINISHED! All operations now forced to $NEW_URL"
+        echo "🎉 DONE! All operations now use base-url = $NEW_URL"
