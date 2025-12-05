@@ -1,4 +1,4 @@
-name: BCP-3
+name: Update-APIM-Operation-Backend-URL
 
 on:
   workflow_dispatch:
