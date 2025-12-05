@@ -18,14 +18,6 @@ jobs:
           --password ${{ secrets.AZURE_CLIENT_SECRET }} \
           --tenant ${{ secrets.AZURE_TENANT_ID }}
 
-    - name: Install APIM extension
-      run: |
-        echo "Installing Azure APIM extension..."
-        az extension add --name apim --yes
-
-        echo "Installed extensions:"
-        az extension list
-
     - name: Update Backend URLs
       shell: bash
       run: |
@@ -47,7 +39,8 @@ jobs:
         for op in $OPERATIONS; do
           echo "Checking operation: $op..."
 
-          POLICY=$(az apim api operation policy show \
+          # Correct command (no extension required)
+          POLICY=$(az apim api operation policy get \
             --resource-group "$RESOURCE_GROUP" \
             --service-name "$APIM_NAME" \
             --api-id "$API_ID" \
