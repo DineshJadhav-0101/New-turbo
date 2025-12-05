@@ -21,7 +21,6 @@ jobs:
           --username "$AZURE_CLIENT_ID" \
           --password "$AZURE_CLIENT_SECRET" \
           --tenant "$AZURE_TENANT_ID"
-
     - name: Update Backend URLs (Safe XML/JSON)
       shell: bash
       env:
@@ -33,17 +32,14 @@ jobs:
         API_VERSION: "2024-05-01"
       run: |
         set -euo pipefail
-
         echo "🔐 Getting subscription ID..."
         SUBS_ID=$(az account show --query id -o tsv)
-
         echo "📌 Fetching operations list..."
         OP_IDS=$(az apim api operation list \
           --resource-group "$RESOURCE_GROUP" \
           --service-name "$APIM_NAME" \
           --api-id "$API_ID" \
           -o json | jq -r '.[].name')
-
         urlencode() {
           local length="${#1}"
           for (( i = 0; i < length; i++ )); do
@@ -54,16 +50,12 @@ jobs:
             esac
           done
         }
-
         for op in $OP_IDS; do
           echo "🔍 Processing: $op"
-
           ENCODED_OP=$(urlencode "$op")
           URI="https://management.azure.com/subscriptions/$SUBS_ID/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.ApiManagement/service/$APIM_NAME/apis/$API_ID/operations/$ENCODED_OP/policies/policy?api-version=$API_VERSION"
-
           # Single GET request
           RAW_RESPONSE=$(az rest --method get --uri "$URI" --output tsv 2>/dev/null || true)
-
           if [[ "$RAW_RESPONSE" == "<"* ]]; then
             echo "📎 XML policy detected"
             POLICY_VALUE="$RAW_RESPONSE"
@@ -71,28 +63,21 @@ jobs:
             echo "📎 JSON policy detected"
             POLICY_VALUE=$(az rest --method get --uri "$URI" -o json | jq -r '.properties.value // empty')
           fi
-
           if [[ -z "$POLICY_VALUE" ]]; then
             echo "⚠️ Empty policy. Skipping..."
             continue
           fi
-
           if ! echo "$POLICY_VALUE" | grep -q "$OLD_URL"; then
             echo "⏭️ URL not present. Skipping..."
             continue
           fi
-
           echo "✏️ Updating URL..."
           UPDATED_POLICY=$(echo "$POLICY_VALUE" | sed "s|${OLD_URL}|${NEW_URL}|g")
-
           BODY=$(jq -n --arg v "$UPDATED_POLICY" '{properties:{value:$v, format:"rawxml"}}')
-
           echo "🚀 Uploading updated policy..."
           az rest --method put --uri "$URI" \
             --headers "Content-Type=application/json" \
             --body "$BODY"
-
           echo "✔ Updated Operation: $op"
         done
-
         echo "🎉 All operations processed successfully!"
