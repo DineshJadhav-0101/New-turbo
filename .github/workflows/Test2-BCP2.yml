@@ -1,0 +1,65 @@
+name: BCP-Trail
+ 
+on:
+  workflow_dispatch:
+ 
+jobs:
+  update-backend:
+    runs-on: ubuntu-latest
+ 
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+ 
+    - name: Azure Login
+      uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+ 
+    - name: Update Backend URLs
+      shell: bash
+      run: |
+        RESOURCE_GROUP="your-rg"
+        APIM_NAME="your-apim"
+        API_ID="TestUrl"
+ 
+        OLD_URL="http://dinesh.com"
+        NEW_URL="https://dinesh1.com"
+ 
+        echo "Getting operations for API: $API_ID..."
+ 
+        OPERATIONS=$(az apim api operation list \
+          --resource-group $RESOURCE_GROUP \
+          --service-name $APIM_NAME \
+          --api-id $API_ID \
+          --query "[].name" -o tsv)
+ 
+        for op in $OPERATIONS; do
+          echo "Checking operation: $op..."
+ 
+          POLICY=$(az apim api operation policy show \
+            --resource-group $RESOURCE_GROUP \
+            --service-name $APIM_NAME \
+            --api-id $API_ID \
+            --operation-id $op \
+            --query "value" -o tsv)
+ 
+          if echo "$POLICY" | grep -q "$OLD_URL"; then
+            echo "Found old backend URL in $op ✔ Updating..."
+ 
+            UPDATED=$(echo "$POLICY" | sed "s#$OLD_URL#$NEW_URL#g")
+            echo "$UPDATED" > updated-policy.xml
+ 
+            az apim api operation policy update \
+              --resource-group $RESOURCE_GROUP \
+              --service-name $APIM_NAME \
+              --api-id $API_ID \
+              --operation-id $op \
+              --policy-file "updated-policy.xml"
+ 
+            echo "Updated backend for operation: $op ✔"
+          else
+            echo "Operation $op does not use $OLD_URL — skipped"
+          fi
+        done
+ 
