@@ -18,6 +18,14 @@ jobs:
           --password ${{ secrets.AZURE_CLIENT_SECRET }} \
           --tenant ${{ secrets.AZURE_TENANT_ID }}
 
+    - name: Install APIM extension
+      run: |
+        echo "Installing Azure APIM extension..."
+        az extension add --name apim --yes
+
+        echo "Installed extensions:"
+        az extension list
+
     - name: Update Backend URLs
       shell: bash
       run: |
