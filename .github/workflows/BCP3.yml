@@ -19,7 +19,7 @@ jobs:
           --password "$AZURE_CLIENT_SECRET" \
           --tenant "$AZURE_TENANT_ID"
 
-    - name: Clean & Update Operation Backend XML
+    - name: Remove backend-id and Force Replace with base-url
       shell: bash
       env:
         RESOURCE_GROUP: "Dinesh-Test-resource-Group"
@@ -58,38 +58,32 @@ jobs:
 
           TMP=$(mktemp)
 
-          # download existing XML
+          # Download existing XML policy
           if ! az rest --method get --uri "$POLICY_URI" --headers Accept=application/xml --output-file "$TMP" >/dev/null 2>&1; then
-            echo "⚠ No policy found for $op. Skipping..."
+            echo "⚠ No policy exists for $op. Skipping..."
             rm -f "$TMP"
             continue
           fi
 
-          # check if old URL exists anywhere
-          if ! grep -q "$OLD_URL" "$TMP"; then
-            echo "⏭ OLD URL not in $op policy. Skipping..."
-            rm -f "$TMP"
-            continue
-          fi
-
-          echo "🧹 Removing any existing set-backend-service XML from $op"
-          # REMOVE full tag (self-closing or multiline)
+          echo "🧹 Removing any existing set-backend-service entries"
+          # Removes <set-backend-service ...> blocks fully (base-url or backend-id or multi-line)
           sed -i '/<set-backend-service[^>]*>/d' "$TMP"
 
-          echo "➕ Adding new backend URL for $op"
-          # Add a new tag before </inbound> if exists, otherwise at top
+          echo "➕ Adding new forced base-url for $op"
           if grep -q "</inbound>" "$TMP"; then
             sed -i "/<\/inbound>/i <set-backend-service base-url=\"$NEW_URL\" />" "$TMP"
           else
             sed -i "1i <set-backend-service base-url=\"$NEW_URL\" />" "$TMP"
           fi
 
-          echo "🚀 Uploading updated XML for $op"
-          az rest --method put --uri "$POLICY_URI" --body @"$TMP" >/dev/null 2>&1 \
-          && echo "✔ Updated policy for $op" \
-          || echo "⚠ Failed to upload for $op"
+          echo "🚀 Uploading updated XML..."
+          if ! az rest --method put --uri "$POLICY_URI" --body @"$TMP" >/dev/null 2>&1; then
+            echo "⚠ Failed to update $op"
+          else
+            echo "✔ Updated $op"
+          fi
 
           rm -f "$TMP"
         done
 
-        echo "🎉 DONE! Backend policies cleaned & replaced!"
+        echo "🎉 Completed Force Replace of backend-id → base-url!"
