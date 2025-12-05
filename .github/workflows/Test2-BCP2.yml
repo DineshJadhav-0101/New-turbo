@@ -11,7 +11,7 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v3
 
-    - name: Azure Login + APIM Extension
+    - name: Azure Login
       env:
         AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
         AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
@@ -21,10 +21,8 @@ jobs:
           --username "$AZURE_CLIENT_ID" \
           --password "$AZURE_CLIENT_SECRET" \
           --tenant "$AZURE_TENANT_ID"
-        echo "📦 Installing APIM extension..."
-        az extension add --name apim --yes
 
-    - name: Update Backend URLs (Error-Free XML)
+    - name: Update Backend URLs (Universal XML Safe)
       shell: bash
       env:
         RESOURCE_GROUP: "Dinesh-Test-resource-Group"
@@ -35,45 +33,55 @@ jobs:
       run: |
         set -euo pipefail
 
-        echo "📌 Fetching operations..."
+        echo "📌 Getting subscription ID..."
+        SUBS_ID=$(az account show --query id -o tsv)
+
+        echo "📌 Fetching operation IDs..."
         OP_IDS=$(az apim api operation list \
           --resource-group "$RESOURCE_GROUP" \
           --service-name "$APIM_NAME" \
           --api-id "$API_ID" \
           --query "[].name" -o tsv)
 
+        urlencode() {
+          local length="${#1}"
+          for (( i = 0; i < length; i++ )); do
+            local c="${1:i:1}"
+            case $c in
+              [a-zA-Z0-9.~_-]) printf "$c" ;;
+              *) printf '%%%02X' "'$c" ;;
+            esac
+          done
+        }
+
         for op in $OP_IDS; do
           echo "🔍 Processing: $op"
+          ENCODED_OP=$(urlencode "$op")
+
+          POLICY_URI="https://management.azure.com/subscriptions/$SUBS_ID/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.ApiManagement/service/$APIM_NAME/apis/$API_ID/operations/$ENCODED_OP/policies/policy?api-version=2022-08-01"
 
           TMP=$(mktemp)
 
           echo "📥 Fetching existing policy..."
-          az apim api operation policy show \
-            --resource-group "$RESOURCE_GROUP" \
-            --service-name "$APIM_NAME" \
-            --api-id "$API_ID" \
-            --operation-id "$op" \
-            --output xml > "$TMP"
+          az rest --method get --uri "$POLICY_URI" --headers Accept=application/xml --output-file "$TMP"
 
           if ! grep -q "$OLD_URL" "$TMP"; then
-            echo "⏭️ URL not found in policy - skipping"
+            echo "⏭ URL not found. Skipping..."
             rm -f "$TMP"
             continue
           fi
 
-          echo "✏️ Updating URL..."
-          sed -i "s|${OLD_URL}|${NEW_URL}|g" "$TMP"
+          echo "✏ Replacing URL..."
+          sed -i "s|$OLD_URL|$NEW_URL|g" "$TMP"
 
           echo "🚀 Uploading updated policy..."
-          az apim api operation policy update \
-            --resource-group "$RESOURCE_GROUP" \
-            --service-name "$APIM_NAME" \
-            --api-id "$API_ID" \
-            --operation-id "$op" \
-            --value @"$TMP"
+          az rest --method put \
+            --uri "$POLICY_URI" \
+            --headers "Content-Type=application/vnd.ms-azure-apim.policy.rawxml" \
+            --body @"$TMP"
 
-          echo "✔ Updated Operation: $op"
+          echo "✔ Updated: $op"
           rm -f "$TMP"
         done
 
-        echo "🎉 All operations processed successfully!"
+        echo "🎉 All policies updated successfully!"
