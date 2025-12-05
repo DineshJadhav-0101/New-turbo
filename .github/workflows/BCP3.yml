@@ -60,14 +60,13 @@ jobs:
 
           TMP=$(mktemp)
 
-          # Get policy safely (ignore errors)
+          echo "📥 Fetching existing policy..."
           if ! az rest --method get --uri "$POLICY_URI" --headers Accept=application/xml --output-file "$TMP" >/dev/null 2>&1; then
             echo "⚠ No policy exists for $op. Skipping..."
             rm -f "$TMP"
             continue
           fi
 
-          # Only update if URL exists
           if ! grep -q "$OLD_URL" "$TMP"; then
             echo "⏭ No backend URL found for $op. Skipping..."
             rm -f "$TMP"
@@ -78,13 +77,13 @@ jobs:
           sed -i "s|${OLD_URL}|${NEW_URL}|g" "$TMP"
 
           echo "🚀 Uploading updated policy..."
-          az rest --method put \
-            --uri "$POLICY_URI" \
-            --headers "Content-Type=application/vnd.ms-azure-apim.policy.rawxml" \
-            --body @"$TMP" \
-            >/dev/null || echo "⚠ Failed to update $op"
+          # 🔥 FIX: Upload XML without forcing content-type
+          if ! az rest --method put --uri "$POLICY_URI" --body @"$TMP" >/dev/null 2>&1; then
+            echo "⚠ Failed to update $op"
+          else
+            echo "✔ Updated backend URL for operation: $op"
+          fi
 
-          echo "✔ Updated backend URL for operation: $op"
           rm -f "$TMP"
         done
 
