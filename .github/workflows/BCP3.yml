@@ -1,4 +1,4 @@
-name: BCP-3
+name: Update-APIM-Backend-URL-Clean-Replace
 
 on:
   workflow_dispatch:
@@ -8,9 +8,6 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout
-      uses: actions/checkout@v3
-
     - name: Azure Login
       env:
         AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
@@ -22,98 +19,21 @@ jobs:
           --password "$AZURE_CLIENT_SECRET" \
           --tenant "$AZURE_TENANT_ID"
 
-    - name: Update Named Backends + API Backend + Operation Policies
+    - name: Clean & Update Operation Backend XML
       shell: bash
       env:
         RESOURCE_GROUP: "Dinesh-Test-resource-Group"
         APIM_NAME: "APIM-TESTNGT"
         API_ID: "TestUrl"
         OLD_URL: "http://dinesh.com"
-        NEW_URL: "https://dinesh1.com"
+        NEW_URL: "http://dinesh1.com"
         API_VERSION: "2022-08-01"
       run: |
         set -euo pipefail
 
         SUBS_ID=$(az account show --query id -o tsv)
-        echo "📌 Subscription: $SUBS_ID"
 
-        ###############################################################################
-        # 1) UPDATE NAMED BACKENDS (APIM → Backends blade)
-        ###############################################################################
-        echo "======================="
-        echo "🔧 Updating Named Backends"
-        echo "======================="
-
-        BACKENDS_URI="https://management.azure.com/subscriptions/$SUBS_ID/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.ApiManagement/service/$APIM_NAME/backends?api-version=$API_VERSION"
-
-        # Get all backend names (value[].name) without jq
-        BACKEND_NAMES=$(az rest --method get --uri "$BACKENDS_URI" --query "value[].name" -o tsv 2>/dev/null || echo "")
-
-        for backend in $BACKEND_NAMES; do
-          echo "🔍 Backend: $backend"
-          B_URI="https://management.azure.com/subscriptions/$SUBS_ID/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.ApiManagement/service/$APIM_NAME/backends/$backend?api-version=$API_VERSION"
-
-          TMP_BACKEND=$(mktemp)
-
-          # Get backend JSON
-          if ! az rest --method get --uri "$B_URI" -o json > "$TMP_BACKEND" 2>/dev/null; then
-            echo "⚠ Could not fetch backend $backend, skipping..."
-            rm -f "$TMP_BACKEND"
-            continue
-          fi
-
-          if ! grep -q "$OLD_URL" "$TMP_BACKEND"; then
-            echo "⏭ OLD_URL not found in backend $backend, skipping..."
-            rm -f "$TMP_BACKEND"
-            continue
-          fi
-
-          echo "✏ Replacing URL in backend $backend..."
-          sed -i "s|${OLD_URL}|${NEW_URL}|g" "$TMP_BACKEND"
-
-          if ! az rest --method put --uri "$B_URI" --body @"$TMP_BACKEND" >/dev/null 2>&1; then
-            echo "⚠ Failed to update backend $backend"
-          else
-            echo "✔ Backend $backend updated"
-          fi
-
-          rm -f "$TMP_BACKEND"
-        done
-
-        ###############################################################################
-        # 2) UPDATE MAIN API BACKEND (serviceUrl)
-        ###############################################################################
-        echo "======================="
-        echo "🌐 Updating Main API Backend (serviceUrl)"
-        echo "======================="
-
-        CURRENT_URL=$(az apim api show \
-          --resource-group "$RESOURCE_GROUP" \
-          --service-name "$APIM_NAME" \
-          --api-id "$API_ID" \
-          --query "serviceUrl" -o tsv)
-
-        echo "📌 Current API serviceUrl = $CURRENT_URL"
-
-        if [[ "$CURRENT_URL" == "$OLD_URL" ]]; then
-          echo "✏ Updating API serviceUrl to $NEW_URL ..."
-          az apim api update \
-            --resource-group "$RESOURCE_GROUP" \
-            --service-name "$APIM_NAME" \
-            --api-id "$API_ID" \
-            --set serviceUrl="$NEW_URL"
-          echo "✔ API serviceUrl updated"
-        else
-          echo "⏭ API serviceUrl does not match OLD_URL, skipping main API update"
-        fi
-
-        ###############################################################################
-        # 3) UPDATE OPERATION POLICIES (set-backend-service base-url etc)
-        ###############################################################################
-        echo "======================="
-        echo "🧩 Updating Operation Policies"
-        echo "======================="
-
+        echo "📌 Fetching all operations..."
         OP_IDS=$(az apim api operation list \
           --resource-group "$RESOURCE_GROUP" \
           --service-name "$APIM_NAME" \
@@ -123,48 +43,53 @@ jobs:
         urlencode() {
           local length="${#1}"
           for (( i = 0; i < length; i++ )); do
-            local c="${1:i:1}"
-            case $c in
-              [a-zA-Z0-9.~_-]) printf "$c" ;;
-              *) printf '%%%02X' "'$c" ;;
+            case "${1:i:1}" in
+              [a-zA-Z0-9.~_-]) printf "${1:i:1}" ;;
+              *) printf '%%%02X' "'${1:i:1}" ;;
             esac
           done
         }
 
         for op in $OP_IDS; do
-          echo "🔍 Operation: $op"
+          echo "🔍 Processing $op"
           ENCODED_OP=$(urlencode "$op")
 
           POLICY_URI="https://management.azure.com/subscriptions/$SUBS_ID/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.ApiManagement/service/$APIM_NAME/apis/$API_ID/operations/$ENCODED_OP/policies/policy?api-version=$API_VERSION"
 
-          TMP_POLICY=$(mktemp)
+          TMP=$(mktemp)
 
-          echo "📥 Fetching policy for $op..."
-          if ! az rest --method get --uri "$POLICY_URI" --headers Accept=application/xml --output-file "$TMP_POLICY" >/dev/null 2>&1; then
-            echo "⚠ No policy exists for $op, skipping..."
-            rm -f "$TMP_POLICY"
+          # download existing XML
+          if ! az rest --method get --uri "$POLICY_URI" --headers Accept=application/xml --output-file "$TMP" >/dev/null 2>&1; then
+            echo "⚠ No policy found for $op. Skipping..."
+            rm -f "$TMP"
             continue
           fi
 
-          if ! grep -q "$OLD_URL" "$TMP_POLICY"; then
-            echo "⏭ OLD_URL not present in $op policy, skipping..."
-            rm -f "$TMP_POLICY"
+          # check if old URL exists anywhere
+          if ! grep -q "$OLD_URL" "$TMP"; then
+            echo "⏭ OLD URL not in $op policy. Skipping..."
+            rm -f "$TMP"
             continue
           fi
 
-          echo "✏ Replacing URL in policy for $op..."
-          sed -i "s|${OLD_URL}|${NEW_URL}|g" "$TMP_POLICY"
+          echo "🧹 Removing any existing set-backend-service XML from $op"
+          # REMOVE full tag (self-closing or multiline)
+          sed -i '/<set-backend-service[^>]*>/d' "$TMP"
 
-          echo "🚀 Uploading updated policy for $op..."
-          if ! az rest --method put --uri "$POLICY_URI" --body @"$TMP_POLICY" >/dev/null 2>&1; then
-            echo "⚠ Failed to update policy for $op"
+          echo "➕ Adding new backend URL for $op"
+          # Add a new tag before </inbound> if exists, otherwise at top
+          if grep -q "</inbound>" "$TMP"; then
+            sed -i "/<\/inbound>/i <set-backend-service base-url=\"$NEW_URL\" />" "$TMP"
           else
-            echo "✔ Policy updated for $op"
+            sed -i "1i <set-backend-service base-url=\"$NEW_URL\" />" "$TMP"
           fi
 
-          rm -f "$TMP_POLICY"
+          echo "🚀 Uploading updated XML for $op"
+          az rest --method put --uri "$POLICY_URI" --body @"$TMP" >/dev/null 2>&1 \
+          && echo "✔ Updated policy for $op" \
+          || echo "⚠ Failed to upload for $op"
+
+          rm -f "$TMP"
         done
 
-        echo "======================="
-        echo "🎉 All backend references processed!"
-        echo "======================="
+        echo "🎉 DONE! Backend policies cleaned & replaced!"
