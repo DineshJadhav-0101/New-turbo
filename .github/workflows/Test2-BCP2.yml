@@ -1,16 +1,7 @@
-name: 🔄 BCP-Trail APIM URL Update
+name: BCP-Trail
 
 on:
   workflow_dispatch:
-    inputs:
-      old_url:
-        description: "Old Backend URL"
-        required: true
-        type: string
-      new_url:
-        description: "New Backend URL"
-        required: true
-        type: string
 
 jobs:
   update-backend:
@@ -31,28 +22,27 @@ jobs:
           --password "$AZURE_CLIENT_SECRET" \
           --tenant "$AZURE_TENANT_ID"
 
-    - name: Update APIM Backend URLs
+    - name: Update Backend URLs (Safe XML/JSON)
       shell: bash
       env:
         RESOURCE_GROUP: "Dinesh-Test-resource-Group"
         APIM_NAME: "APIM-TESTNGT"
         API_ID: "TestUrl"
+        OLD_URL: "http://dinesh.com"
+        NEW_URL: "https://dinesh1.com"
         API_VERSION: "2024-05-01"
-        OLD_URL: ${{ github.event.inputs.old_url }}
-        NEW_URL: ${{ github.event.inputs.new_url }}
       run: |
         set -euo pipefail
 
-        echo "📌 Fetching Subscription..."
+        echo "🔐 Getting subscription ID..."
         SUBS_ID=$(az account show --query id -o tsv)
 
-        echo "📌 Fetching API operations..."
-        OPERATIONS_JSON=$(az apim api operation list \
+        echo "📌 Fetching operations list..."
+        OP_IDS=$(az apim api operation list \
           --resource-group "$RESOURCE_GROUP" \
           --service-name "$APIM_NAME" \
-          --api-id "$API_ID" -o json)
-
-        OP_IDS=$(echo "$OPERATIONS_JSON" | jq -r '.[].name')
+          --api-id "$API_ID" \
+          -o json | jq -r '.[].name')
 
         urlencode() {
           local length="${#1}"
@@ -66,23 +56,24 @@ jobs:
         }
 
         for op in $OP_IDS; do
-          echo "🔍 Processing operation: $op"
-          ENCODED_OP=$(urlencode "$op")
+          echo "🔍 Processing: $op"
 
+          ENCODED_OP=$(urlencode "$op")
           URI="https://management.azure.com/subscriptions/$SUBS_ID/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.ApiManagement/service/$APIM_NAME/apis/$API_ID/operations/$ENCODED_OP/policies/policy?api-version=$API_VERSION"
 
-          RAW_TEXT=$(az rest --method get --uri "$URI" --output tsv 2>/dev/null || true)
+          # Single GET request
+          RAW_RESPONSE=$(az rest --method get --uri "$URI" --output tsv 2>/dev/null || true)
 
-          if [[ "$RAW_TEXT" == "<"* ]]; then
-            echo "📎 XML policy found"
-            POLICY_VALUE="$RAW_TEXT"
+          if [[ "$RAW_RESPONSE" == "<"* ]]; then
+            echo "📎 XML policy detected"
+            POLICY_VALUE="$RAW_RESPONSE"
           else
-            echo "📎 JSON policy found"
+            echo "📎 JSON policy detected"
             POLICY_VALUE=$(az rest --method get --uri "$URI" -o json | jq -r '.properties.value // empty')
           fi
 
-          if [ -z "$POLICY_VALUE" ]; then
-            echo "🚫 Empty policy. Skipping..."
+          if [[ -z "$POLICY_VALUE" ]]; then
+            echo "⚠️ Empty policy. Skipping..."
             continue
           fi
 
@@ -101,7 +92,7 @@ jobs:
             --headers "Content-Type=application/json" \
             --body "$BODY"
 
-          echo "✔️ Updated Operation: $op"
+          echo "✔ Updated Operation: $op"
         done
 
-        echo "🎉 DONE Updating All Operations!"
+        echo "🎉 All operations processed successfully!"
