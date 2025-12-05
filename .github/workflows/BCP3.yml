@@ -55,28 +55,30 @@ jobs:
           ENCODED_OP=$(urlencode "$op")
           POLICY_URI="https://management.azure.com/subscriptions/$SUBS_ID/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.ApiManagement/service/$APIM_NAME/apis/$API_ID/operations/$ENCODED_OP/policies/policy?api-version=$API_VERSION"
 
+// --------- FIXED YAML: NO INDENT BEFORE EOF -----------------
+
           TMP=$(mktemp)
 
           echo "📥 Getting existing full policy XML"
           if ! az rest --method get --uri "$POLICY_URI" --headers Accept=application/xml --output-file "$TMP" >/dev/null 2>&1; then
             echo "⚠ No policy exists for $op. Creating full policy..."
-            cat <<EOF > "$TMP"
-<policies>
-  <inbound>
-    <base />
-    <set-backend-service base-url="$NEW_URL" />
-  </inbound>
-  <backend>
-    <base />
-  </backend>
-  <outbound>
-    <base />
-  </outbound>
-  <on-error>
-    <base />
-  </on-error>
-</policies>
-EOF
+            cat > "$TMP" <<EOF
+            <policies>
+            <inbound>
+                <base />
+                <set-backend-service base-url="$NEW_URL" />
+            </inbound>
+            <backend>
+                <base />
+            </backend>
+            <outbound>
+                <base />
+            </outbound>
+            <on-error>
+                <base />
+            </on-error>
+            </policies>
+            EOF
           else
             echo "🧹 Removing old set-backend-service from $op"
             sed -i '/<set-backend-service[^>]*>/d' "$TMP"
@@ -95,4 +97,4 @@ EOF
           rm -f "$TMP"
         done
 
-        echo "🎉 FINISHED! All set-backend-service now forced to $NEW_URL"
+        echo "🎉 FINISHED! All operations now forced to $NEW_URL"
