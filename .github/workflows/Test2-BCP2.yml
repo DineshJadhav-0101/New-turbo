@@ -1,7 +1,16 @@
-name: BCP-Trail
+name: 🔄 BCP-Trail APIM URL Update
 
 on:
   workflow_dispatch:
+    inputs:
+      old_url:
+        description: "Old Backend URL"
+        required: true
+        type: string
+      new_url:
+        description: "New Backend URL"
+        required: true
+        type: string
 
 jobs:
   update-backend:
@@ -22,22 +31,22 @@ jobs:
           --password "$AZURE_CLIENT_SECRET" \
           --tenant "$AZURE_TENANT_ID"
 
-    - name: Update Backend URLs (XML safe version)
+    - name: Update APIM Backend URLs
       shell: bash
       env:
         RESOURCE_GROUP: "Dinesh-Test-resource-Group"
         APIM_NAME: "APIM-TESTNGT"
         API_ID: "TestUrl"
-        OLD_URL: "http://dinesh.com"
-        NEW_URL: "https://dinesh1.com"
         API_VERSION: "2024-05-01"
+        OLD_URL: ${{ github.event.inputs.old_url }}
+        NEW_URL: ${{ github.event.inputs.new_url }}
       run: |
         set -euo pipefail
 
-        echo "Getting subscription ID..."
+        echo "📌 Fetching Subscription..."
         SUBS_ID=$(az account show --query id -o tsv)
 
-        echo "Fetching operations..."
+        echo "📌 Fetching API operations..."
         OPERATIONS_JSON=$(az apim api operation list \
           --resource-group "$RESOURCE_GROUP" \
           --service-name "$APIM_NAME" \
@@ -57,50 +66,42 @@ jobs:
         }
 
         for op in $OP_IDS; do
-          echo "Processing: $op"
-
+          echo "🔍 Processing operation: $op"
           ENCODED_OP=$(urlencode "$op")
 
           URI="https://management.azure.com/subscriptions/$SUBS_ID/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.ApiManagement/service/$APIM_NAME/apis/$API_ID/operations/$ENCODED_OP/policies/policy?api-version=$API_VERSION"
 
-          echo "Getting policy..."
-          RAW=$(az rest --method get --uri "$URI" --output none 2>/dev/null || true)
-
-          # If API returns XML, RAW will contain XML
-          RAW=$(az rest --method get --uri "$URI" --output none 2>/dev/null || true)
-
-          # Fetch again as text (real data)
           RAW_TEXT=$(az rest --method get --uri "$URI" --output tsv 2>/dev/null || true)
 
           if [[ "$RAW_TEXT" == "<"* ]]; then
-            echo "XML policy detected"
+            echo "📎 XML policy found"
             POLICY_VALUE="$RAW_TEXT"
           else
-            echo "JSON policy detected"
-            POLICY_VALUE=$(az rest --method get --uri "$URI" -o json | jq -r '.properties.value')
+            echo "📎 JSON policy found"
+            POLICY_VALUE=$(az rest --method get --uri "$URI" -o json | jq -r '.properties.value // empty')
           fi
 
           if [ -z "$POLICY_VALUE" ]; then
-            echo "Empty policy - skip"
+            echo "🚫 Empty policy. Skipping..."
             continue
           fi
 
           if ! echo "$POLICY_VALUE" | grep -q "$OLD_URL"; then
-            echo "Old URL not found - skip"
+            echo "⏭️ URL not present. Skipping..."
             continue
           fi
 
-          echo "Updating URL..."
-          UPDATED_POLICY=$(echo "$POLICY_VALUE" | sed "s#$OLD_URL#$NEW_URL#g")
+          echo "✏️ Updating URL..."
+          UPDATED_POLICY=$(echo "$POLICY_VALUE" | sed "s|${OLD_URL}|${NEW_URL}|g")
 
-          BODY=$(jq -n --arg v "$UPDATED_POLICY" '{properties:{value:$v,format:"rawxml"}}')
+          BODY=$(jq -n --arg v "$UPDATED_POLICY" '{properties:{value:$v, format:"rawxml"}}')
 
-          echo "Uploading..."
+          echo "🚀 Uploading updated policy..."
           az rest --method put --uri "$URI" \
             --headers "Content-Type=application/json" \
             --body "$BODY"
 
-          echo "Updated ✔ $op"
+          echo "✔️ Updated Operation: $op"
         done
 
-        echo "DONE."
+        echo "🎉 DONE Updating All Operations!"
