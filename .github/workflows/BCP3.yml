@@ -1,4 +1,4 @@
-name: Update-APIM-Operation-Backend-URL
+name: BCP-3
 
 on:
   workflow_dispatch:
@@ -22,7 +22,7 @@ jobs:
           --password "$AZURE_CLIENT_SECRET" \
           --tenant "$AZURE_TENANT_ID"
 
-    - name: Update Backend URL in Operation Policies
+    - name: Update MAIN API Backend URL + Operation Policies
       shell: bash
       env:
         RESOURCE_GROUP: "Dinesh-Test-resource-Group"
@@ -34,7 +34,34 @@ jobs:
       run: |
         set -euo pipefail
 
-        echo "📌 Fetching all operations..."
+        echo "======================="
+        echo "🔐 Reading Current Main Backend URL"
+        echo "======================="
+
+        CURRENT_URL=$(az apim api show \
+          --resource-group "$RESOURCE_GROUP" \
+          --service-name "$APIM_NAME" \
+          --api-id "$API_ID" \
+          --query "serviceUrl" -o tsv)
+
+        echo "📌 Current backend serviceUrl = $CURRENT_URL"
+
+        if [[ "$CURRENT_URL" == "$OLD_URL" ]]; then
+          echo "✏ Updating MAIN API backend URL..."
+          az apim api update \
+            --resource-group "$RESOURCE_GROUP" \
+            --service-name "$APIM_NAME" \
+            --api-id "$API_ID" \
+            --set serviceUrl="$NEW_URL"
+          echo "✔ MAIN backend changed successfully 👍"
+        else
+          echo "⏭ Skipping MAIN backend update (does not match OLD_URL)"
+        fi
+
+        echo "======================="
+        echo "🎯 Updating Operation Policies"
+        echo "======================="
+
         OP_IDS=$(az apim api operation list \
           --resource-group "$RESOURCE_GROUP" \
           --service-name "$APIM_NAME" \
@@ -53,14 +80,13 @@ jobs:
         }
 
         for op in $OP_IDS; do
-          echo "🔍 Checking operation: $op"
+          echo "🔍 Checking OPERATION: $op"
           ENCODED_OP=$(urlencode "$op")
 
           POLICY_URI="https://management.azure.com/subscriptions/$(az account show --query id -o tsv)/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.ApiManagement/service/$APIM_NAME/apis/$API_ID/operations/$ENCODED_OP/policies/policy?api-version=$API_VERSION"
 
           TMP=$(mktemp)
 
-          echo "📥 Fetching existing policy..."
           if ! az rest --method get --uri "$POLICY_URI" --headers Accept=application/xml --output-file "$TMP" >/dev/null 2>&1; then
             echo "⚠ No policy exists for $op. Skipping..."
             rm -f "$TMP"
@@ -68,23 +94,24 @@ jobs:
           fi
 
           if ! grep -q "$OLD_URL" "$TMP"; then
-            echo "⏭ No backend URL found for $op. Skipping..."
+            echo "⏭ No backend URL found in $op"
             rm -f "$TMP"
             continue
           fi
 
-          echo "✏ Updating URL for $op..."
+          echo "✏ Updating backend URL in policy for $op..."
           sed -i "s|${OLD_URL}|${NEW_URL}|g" "$TMP"
 
-          echo "🚀 Uploading updated policy..."
-          # 🔥 FIX: Upload XML without forcing content-type
+          echo "🚀 Uploading updated policy for $op..."
           if ! az rest --method put --uri "$POLICY_URI" --body @"$TMP" >/dev/null 2>&1; then
             echo "⚠ Failed to update $op"
           else
-            echo "✔ Updated backend URL for operation: $op"
+            echo "✔ Successfully updated $op"
           fi
 
           rm -f "$TMP"
         done
 
-        echo "🎉 All matching operation policies updated!"
+        echo "======================="
+        echo "🎉 Completed Successfully!"
+        echo "======================="
