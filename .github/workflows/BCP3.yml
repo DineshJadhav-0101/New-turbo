@@ -36,20 +36,18 @@ jobs:
           --password "$AZURE_CLIENT_SECRET" \
           --tenant "$AZURE_TENANT_ID"
 
-    - name: Decide URLs for Switch
+    - name: Determine Switch Direction
       id: decide
       run: |
         if [ "${{ github.event.inputs.direction }}" = "prod-to-dr" ]; then
-          FROM_URL="$PROD_URL"
-          TO_URL="$DR_URL"
+          echo "FROM_URL=$PROD_URL" >> $GITHUB_OUTPUT
+          echo "TO_URL=$DR_URL" >> $GITHUB_OUTPUT
         else
-          FROM_URL="$DR_URL"
-          TO_URL="$PROD_URL"
+          echo "FROM_URL=$DR_URL" >> $GITHUB_OUTPUT
+          echo "TO_URL=$PROD_URL" >> $GITHUB_OUTPUT
         fi
-        echo "FROM_URL=$FROM_URL" >> $GITHUB_OUTPUT
-        echo "TO_URL=$TO_URL" >> $GITHUB_OUTPUT
 
-    - name: Switch Operation Backend Policies Only
+    - name: Switch Only Operation Policies
       env:
         FROM_URL: ${{ steps.decide.outputs.FROM_URL }}
         TO_URL: ${{ steps.decide.outputs.TO_URL }}
@@ -57,61 +55,53 @@ jobs:
         set -euo pipefail
         SUBS_ID=$(az account show --query id -o tsv)
 
-        echo "📌 Fetching all operations..."
+        echo "📌 Fetching operations for API $API_ID..."
         OP_IDS=$(az apim api operation list \
           --resource-group "$RESOURCE_GROUP" \
           --service-name "$APIM_NAME" \
           --api-id "$API_ID" \
           --query "[].name" -o tsv)
 
-        urlencode() { local length="${#1}"; for (( i=0; i<length; i++)); do case "${1:i:1}" in [a-zA-Z0-9.~_-]) printf "${1:i:1}";; *) printf '%%%02X' "'${1:i:1}";; esac; done; }
+        urlencode() { local s="${1}"; local l=${#s}; for ((i=0;i<l;i++)); do c="${s:i:1}"; [[ "$c" =~ [a-zA-Z0-9.~_-] ]] && printf "$c" || printf '%%%02X' "'$c"; done; }
 
         for op in $OP_IDS; do
-          echo "🔍 Checking operation: $op"
+          echo "🔍 Checking: $op"
           ENCODED_OP=$(urlencode "$op")
-
           POLICY_URI="https://management.azure.com/subscriptions/$SUBS_ID/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.ApiManagement/service/$APIM_NAME/apis/$API_ID/operations/$ENCODED_OP/policies/policy?api-version=$API_VERSION"
-          
+
           TMP=$(mktemp)
 
-          echo "📥 Fetching existing policy..."
-          if ! az rest --method get --uri "$POLICY_URI" --headers Accept=application/xml --output-file "$TMP" >/dev/null 2>&1; then
-            echo "⚠ No policy — Skipping"
-            rm -f "$TMP"
-            continue
-          fi
-
-          if ! grep -q "$FROM_URL" "$TMP"; then
-            echo "⏭ No match. Skipping $op"
-            rm -f "$TMP"
-            continue
-          fi
-
-          echo "✏ Replacing $FROM_URL → $TO_URL in $op..."
-          sed -i "s|$FROM_URL|$TO_URL|g" "$TMP"
-
-          # Validate: If XML missing blocks, reconstruct a valid default
-          if ! grep -q "<policies>" "$TMP"; then
-            echo "⚠ Policy incomplete! Rebuilding full XML..."
-            echo "<policies>" > "$TMP"
-            echo "  <inbound>" >> "$TMP"
-            echo "    <base />" >> "$TMP"
-            echo "    <set-backend-service base-url=\"$TO_URL\" />" >> "$TMP"
-            echo "  </inbound>" >> "$TMP"
-            echo "  <backend><base /></backend>" >> "$TMP"
-            echo "  <outbound><base /></outbound>" >> "$TMP"
-            echo "  <on-error><base /></on-error>" >> "$TMP"
-            echo "</policies>" >> "$TMP"
-          fi
-
-          echo "🚀 Uploading updated policy..."
-          if ! az rest --method put --uri "$POLICY_URI" --body @"$TMP" >/dev/null 2>&1; then
-            echo "❌ FAILED to update $op"
+          echo "📥 Reading existing policy..."
+          if ! az rest --method get --uri "$POLICY_URI" --headers "Accept=application/vnd.ms-azure-apim.policy+xml" --output-file "$TMP" >/dev/null 2>&1; then
+            echo "⚠ No existing policy. Creating new one for $op"
+            echo "<policies><inbound><base /><set-backend-service base-url=\"$TO_URL\" /></inbound><backend><base /></backend><outbound><base /></outbound><on-error><base /></on-error></policies>" > "$TMP"
           else
-            echo "✔ SUCCESS: updated $op"
+            if ! grep -q "$FROM_URL" "$TMP"; then
+              echo "⏭ URL not found in $op — skip"
+              rm -f "$TMP"
+              continue
+            fi
+
+            echo "✏ Replacing $FROM_URL → $TO_URL"
+            sed -i "s|$FROM_URL|$TO_URL|g" "$TMP"
+
+            # FIX IF MISSING FULL XML STRUCTURE
+            if ! grep -q "<policies>" "$TMP"; then
+              echo "⚠ Policy invalid — rebuilding full XML"
+              echo "<policies><inbound><base /><set-backend-service base-url=\"$TO_URL\" /></inbound><backend><base /></backend><outbound><base /></outbound><on-error><base /></on-error></policies>" > "$TMP"
+            fi
+          fi
+
+          echo "🚀 Uploading..."
+          if ! az rest --method put --uri "$POLICY_URI" \
+            --headers "Content-Type=application/vnd.ms-azure-apim.policy+xml" \
+            --body @"$TMP" >/dev/null 2>&1; then
+            echo "❌ FAILED: $op"
+          else
+            echo "✔ SUCCESS: Updated $op"
           fi
 
           rm -f "$TMP"
         done
 
-        echo "🎉 DR Switch Complete — Only Operation Backends Updated!"
+        echo "🎉 DR SWITCH COMPLETE — Only per-operation backend updated!"
