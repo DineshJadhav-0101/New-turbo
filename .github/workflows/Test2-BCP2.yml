@@ -18,8 +18,8 @@ jobs:
     - name: Update Backend URLs
       shell: bash
       run: |
-        RESOURCE_GROUP="your-rg"
-        APIM_NAME="your-apim"
+        RESOURCE_GROUP="Dinesh-Test-resource-Group"
+        APIM_NAME="APIM-TESTNG"
         API_ID="TestUrl"
  
         OLD_URL="http://dinesh.com"
