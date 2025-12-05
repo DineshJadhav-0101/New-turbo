@@ -11,10 +11,9 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v3
  
+     # Step 3: Azure Login using Service Principal
     - name: Azure Login
-      uses: azure/login@v1
-      with:
-        creds: ${{ secrets.AZURE_CREDENTIALS }}
+      run: az login --service-principal --username ${{ secrets.AZURE_CLIENT_ID }} --password ${{ secrets.AZURE_CLIENT_SECRET }} --tenant ${{ secrets.AZURE_TENANT_ID }}
  
     - name: Update Backend URLs
       shell: bash
