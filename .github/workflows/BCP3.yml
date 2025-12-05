@@ -1,0 +1,91 @@
+name: BCP-3
+
+on:
+  workflow_dispatch:
+
+jobs:
+  update-backend:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+
+    - name: Azure Login
+      env:
+        AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+        AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      run: |
+        az login --service-principal \
+          --username "$AZURE_CLIENT_ID" \
+          --password "$AZURE_CLIENT_SECRET" \
+          --tenant "$AZURE_TENANT_ID"
+
+    - name: Update Backend URL in Operation Policies
+      shell: bash
+      env:
+        RESOURCE_GROUP: "Dinesh-Test-resource-Group"
+        APIM_NAME: "APIM-TESTNGT"
+        API_ID: "TestUrl"
+        OLD_URL: "http://dinesh.com"
+        NEW_URL: "https://dinesh1.com"
+        API_VERSION: "2022-08-01"
+      run: |
+        set -euo pipefail
+
+        echo "📌 Fetching all operations..."
+        OP_IDS=$(az apim api operation list \
+          --resource-group "$RESOURCE_GROUP" \
+          --service-name "$APIM_NAME" \
+          --api-id "$API_ID" \
+          --query "[].name" -o tsv)
+
+        urlencode() {
+          local length="${#1}"
+          for (( i = 0; i < length; i++ )); do
+            local c="${1:i:1}"
+            case $c in
+              [a-zA-Z0-9.~_-]) printf "$c" ;;
+              *) printf '%%%02X' "'$c" ;;
+            esac
+          done
+        }
+
+        for op in $OP_IDS; do
+          echo "🔍 Checking operation: $op"
+          ENCODED_OP=$(urlencode "$op")
+
+          POLICY_URI="https://management.azure.com/subscriptions/$(az account show --query id -o tsv)/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.ApiManagement/service/$APIM_NAME/apis/$API_ID/operations/$ENCODED_OP/policies/policy?api-version=$API_VERSION"
+
+          TMP=$(mktemp)
+
+          # Get policy safely (ignore errors)
+          if ! az rest --method get --uri "$POLICY_URI" --headers Accept=application/xml --output-file "$TMP" >/dev/null 2>&1; then
+            echo "⚠ No policy exists for $op. Skipping..."
+            rm -f "$TMP"
+            continue
+          fi
+
+          # Only update if URL exists
+          if ! grep -q "$OLD_URL" "$TMP"; then
+            echo "⏭ No backend URL found for $op. Skipping..."
+            rm -f "$TMP"
+            continue
+          fi
+
+          echo "✏ Updating URL for $op..."
+          sed -i "s|${OLD_URL}|${NEW_URL}|g" "$TMP"
+
+          echo "🚀 Uploading updated policy..."
+          az rest --method put \
+            --uri "$POLICY_URI" \
+            --headers "Content-Type=application/vnd.ms-azure-apim.policy.rawxml" \
+            --body @"$TMP" \
+            >/dev/null || echo "⚠ Failed to update $op"
+
+          echo "✔ Updated backend URL for operation: $op"
+          rm -f "$TMP"
+        done
+
+        echo "🎉 All matching operation policies updated!"
