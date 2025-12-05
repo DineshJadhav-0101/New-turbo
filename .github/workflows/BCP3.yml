@@ -58,7 +58,7 @@ jobs:
 
           TMP=$(mktemp)
 
-          # Download existing XML policy
+          # Download existing XML
           if ! az rest --method get --uri "$POLICY_URI" --headers Accept=application/xml --output-file "$TMP" >/dev/null 2>&1; then
             echo "⚠ No policy exists for $op. Skipping..."
             rm -f "$TMP"
@@ -66,13 +66,17 @@ jobs:
           fi
 
           echo "🧹 Removing any existing set-backend-service entries"
-          # Removes <set-backend-service ...> blocks fully (base-url or backend-id or multi-line)
           sed -i '/<set-backend-service[^>]*>/d' "$TMP"
 
           echo "➕ Adding new forced base-url for $op"
-          if grep -q "</inbound>" "$TMP"; then
+          if grep -q "<base" "$TMP"; then
+            # add AFTER <base />
+            sed -i "/<base[[:space:]]*\/>/a <set-backend-service base-url=\"$NEW_URL\" />" "$TMP"
+          elif grep -q "</inbound>" "$TMP"; then
+            # add BEFORE closing inbound
             sed -i "/<\/inbound>/i <set-backend-service base-url=\"$NEW_URL\" />" "$TMP"
           else
+            # no inbound? Add at top
             sed -i "1i <set-backend-service base-url=\"$NEW_URL\" />" "$TMP"
           fi
 
@@ -86,4 +90,4 @@ jobs:
           rm -f "$TMP"
         done
 
-        echo "🎉 Completed Force Replace of backend-id → base-url!"
+        echo "🎉 DONE! All operations now directly use base-url instead of backend-id"
