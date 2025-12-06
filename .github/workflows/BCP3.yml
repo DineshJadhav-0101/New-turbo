@@ -71,17 +71,21 @@ jobs:
 
           TMP=$(mktemp)
 
-          # Retrieve existing policy
+          # Retrieve policy
           if ! az rest --method get --uri "$POLICY_URI" \
               --headers "Accept=application/vnd.ms-azure-apim.policy+xml" \
               --output-file "$TMP" >/dev/null 2>&1; then
 
-            echo "⚠ No policy found. Creating new..."
+            echo "⚠ No policy found. Creating new XML..."
             XML="<policies><inbound><base/><set-backend-service base-url=\"$TO_URL\"/></inbound><backend><base/></backend><outbound><base/></outbound><on-error><base/></on-error></policies>"
-          
+
           else
+
+            # Remove BOM at file start if exists
+            sed -i '1s/^\xEF\xBB\xBF//' "$TMP"
+
             if ! grep -q "$FROM_URL" "$TMP"; then
-              echo "⏭ Skipping (No match URL)"
+              echo "⏭ Skip (No matching URL)"
               rm -f "$TMP"
               continue
             fi
@@ -92,19 +96,18 @@ jobs:
 
           rm -f "$TMP"
 
-          # Escape XML for JSON
-          XML_ESCAPED=$(echo "$XML" | sed 's/"/\\"/g' | sed 's/$/\\n/' )
+          # Escape XML quotes ONLY
+          XML_ESCAPED=$(printf '%s' "$XML" | sed 's/"/\\"/g')
 
-          # Create JSON Envelope
           BODY=$(jq -n --arg v "$XML_ESCAPED" '{properties:{format:"rawxml",value:$v}}')
 
-          echo "🚀 Uploading JSON policy..."
+          echo "🚀 Uploading..."
           az rest --method put --uri "$POLICY_URI" \
             --headers "Content-Type=application/json" \
             --headers "If-Match=*" \
             --body "$BODY"
 
-          echo "✔ SUCCESS Updated: $op"
+          echo "✔ SUCCESS: $op"
         done
 
         echo "🎉 COMPLETED — Operation Backend URLs Switched!"
