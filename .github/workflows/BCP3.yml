@@ -36,7 +36,7 @@ jobs:
           --password "$AZURE_CLIENT_SECRET" \
           --tenant "$AZURE_TENANT_ID"
 
-    - name: Determine Switch Direction
+    - name: Decide URL Direction
       id: decide
       run: |
         if [ "${{ github.event.inputs.direction }}" = "prod-to-dr" ]; then
@@ -47,7 +47,7 @@ jobs:
           echo "TO_URL=$PROD_URL" >> $GITHUB_OUTPUT
         fi
 
-    - name: Switch Only Operation Policies
+    - name: Modify Operation Policies with ETag
       env:
         FROM_URL: ${{ steps.decide.outputs.FROM_URL }}
         TO_URL: ${{ steps.decide.outputs.TO_URL }}
@@ -55,79 +55,57 @@ jobs:
         set -euo pipefail
         SUBS_ID=$(az account show --query id -o tsv)
 
-        echo "📌 Fetching operations for API $API_ID..."
-        OP_IDS=$(az apim api operation list \
+        echo "📌 Fetching operations..."
+        OPS=$(az apim api operation list \
           --resource-group "$RESOURCE_GROUP" \
           --service-name "$APIM_NAME" \
           --api-id "$API_ID" \
           --query "[].name" -o tsv)
 
         urlencode() {
-          local s="${1}"
-          local l=${#s}
+          local s="$1"; local l=${#s}
           for ((i=0;i<l;i++)); do
             c="${s:i:1}"
-            if [[ "$c" =~ [a-zA-Z0-9.~_-] ]]; then
-              printf "%s" "$c"
-            else
-              printf '%%%02X' "'$c"
-            fi
+            [[ "$c" =~ [a-zA-Z0-9.~_-] ]] && printf "%s" "$c" || printf '%%%02X' "'$c"
           done
         }
 
-        for op in $OP_IDS; do
-          echo "🔍 Checking: $op"
-          ENCODED_OP=$(urlencode "$op")
-          POLICY_URI="https://management.azure.com/subscriptions/$SUBS_ID/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.ApiManagement/service/$APIM_NAME/apis/$API_ID/operations/$ENCODED_OP/policies/policy?api-version=$API_VERSION"
+        for op in $OPS; do
+          echo "🔍 Operation: $op"
+          ENCODED=$(urlencode "$op")
+
+          POLICY_URI="https://management.azure.com/subscriptions/$SUBS_ID/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.ApiManagement/service/$APIM_NAME/apis/$API_ID/operations/$ENCODED/policies/policy?api-version=$API_VERSION"
 
           TMP=$(mktemp)
 
-          echo "📥 Reading existing policy..."
+          # GET XML
           if ! az rest --method get --uri "$POLICY_URI" \
-              --headers "Accept=application/vnd.ms-azure-apim.policy+xml" \
-              --output-file "$TMP" >/dev/null 2>&1; then
-            echo "⚠ No existing policy. Creating new one for $op"
+                --headers "Accept=application/vnd.ms-azure-apim.policy+xml" \
+                --output-file "$TMP" >/dev/null 2>&1; then
+            echo "⚠ No policy found, creating new..."
             echo "<policies><inbound><base /><set-backend-service base-url=\"$TO_URL\" /></inbound><backend><base /></backend><outbound><base /></outbound><on-error><base /></on-error></policies>" > "$TMP"
           else
             if ! grep -q "$FROM_URL" "$TMP"; then
-              echo "⏭ URL not found in $op — skip"
+              echo "⏭ Skip (no matching URL)"
               rm -f "$TMP"
               continue
             fi
-
-            echo "✏ Replacing $FROM_URL → $TO_URL"
+            echo "✏ Replacing URL..."
             sed -i "s|$FROM_URL|$TO_URL|g" "$TMP"
-
-            # FIX IF MISSING FULL XML STRUCTURE
-            if ! grep -q "<policies>" "$TMP"; then
-              echo "⚠ Policy invalid — rebuilding full XML"
-              echo "<policies><inbound><base /><set-backend-service base-url=\"$TO_URL\" /></inbound><backend><base /></backend><outbound><base /></outbound><on-error><base /></on-error></policies>" > "$TMP"
-            fi
           fi
 
-          echo "🚀 Uploading updated policy for $op..."
-          echo "🔎 POLICY_URI = $POLICY_URI"
-          echo "🔎 POLICY BODY:"
-          cat "$TMP"
-          echo "----------------------------------------"
-
-          # DEBUG UPLOAD – capture real Azure error
-          set +e
-          UPLOAD_OUTPUT=$(az rest --method put --uri "$POLICY_URI" \
+          # FORCE POLICY OVERWRITE USING ETag *
+          echo "🚀 Upload with If-Match: *"
+          if az rest --method put --uri "$POLICY_URI" \
             --headers "Content-Type=application/vnd.ms-azure-apim.policy+xml" \
-            --body @"$TMP" 2>&1)
-          STATUS=$?
-          set -e
-
-          if [ $STATUS -ne 0 ]; then
-            echo "❌ FAILED: $op (exit code $STATUS)"
-            echo "🔴 Azure error response:"
-            echo "$UPLOAD_OUTPUT"
+            --headers "If-Match: *" \
+            --body @"$TMP"; then
+            echo "✔ Updated $op"
           else
-            echo "✔ SUCCESS: Updated $op"
+            echo "❌ FAILED updating $op"
           fi
 
           rm -f "$TMP"
         done
 
-        echo "🎉 DR SWITCH COMPLETE — Only per-operation backend updated!"
+        echo "🎉 COMPLETED: Only operation backend URLs switched!"
