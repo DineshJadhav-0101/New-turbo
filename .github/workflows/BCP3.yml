@@ -1,27 +1,16 @@
-name: APIM-DR-Operation-Switch
+name: APIM-DEBUG
 
 on:
   workflow_dispatch:
-    inputs:
-      direction:
-        description: "Switch direction"
-        required: true
-        type: choice
-        options:
-          - prod-to-dr
-          - dr-to-prod
 
 jobs:
-  switch:
+  debug:
     runs-on: ubuntu-latest
-    
+
     env:
       RESOURCE_GROUP: "Dinesh-Test-resource-Group"
       APIM_NAME: "APIM-TESTNGT"
       API_ID: "TestUrl"
-
-      PROD_URL: "http://dinesh.com"
-      DR_URL: "http://dinesh1.com"
 
     steps:
     - name: Azure Login
@@ -35,73 +24,25 @@ jobs:
           --password "$AZURE_CLIENT_SECRET" \
           --tenant "$AZURE_TENANT_ID"
 
-    - name: Decide URLs
-      id: decide
+    - name: Show Real APIM Error
       run: |
-        if [ "${{ github.event.inputs.direction }}" = "prod-to-dr" ]; then
-          echo "FROM_URL=$PROD_URL" >> $GITHUB_OUTPUT
-          echo "TO_URL=$DR_URL" >> $GITHUB_OUTPUT
-        else
-          echo "FROM_URL=$DR_URL" >> $GITHUB_OUTPUT
-          echo "TO_URL=$PROD_URL" >> $GITHUB_OUTPUT
-        fi
-
-    - name: Switch Operation URLs
-      env:
-        FROM_URL: ${{ steps.decide.outputs.FROM_URL }}
-        TO_URL: ${{ steps.decide.outputs.TO_URL }}
-      run: |
-        set -euo pipefail
-
-        echo "📌 Fetching operations..."
-        OP_IDS=$(az apim api operation list \
-          --resource-group "$RESOURCE_GROUP" \
-          --service-name "$APIM_NAME" \
-          --api-id "$API_ID" \
-          --query "[].name" -o tsv)
-
-        urlencode() { local s="${1}"; local l=${#s}; for ((i=0;i<l;i++)); do c="${s:i:1}"; [[ "$c" =~ [a-zA-Z0-9.~_-] ]] && printf "$c" || printf '%%%02X' "'$c"; done; }
-
-        for op in $OP_IDS; do
-          echo "🔍 Operation: $op"
-          ENCODED_OP=$(urlencode "$op")
-
+        OPS=$(az apim api operation list --resource-group "$RESOURCE_GROUP" --service-name "$APIM_NAME" --api-id "$API_ID" --query "[].name" -o tsv)
+        for op in $OPS; do
+          echo "🔍 Testing $op"
           TMP=$(mktemp)
-
-          echo "📥 Checking existing policy..."
-          if az apim api operation policy show \
+          az apim api operation policy show \
             --resource-group "$RESOURCE_GROUP" \
             --service-name "$APIM_NAME" \
             --api-id "$API_ID" \
             --operation-id "$op" \
-            --query "value" -o tsv > "$TMP" 2>/dev/null; then
-
-            if ! grep -q "$FROM_URL" "$TMP"; then
-              echo "⏭ No matching URL — skip"
-              rm -f "$TMP"
-              continue
-            fi
-
-            echo "✏ Replacing URL..."
-            sed -i "s|$FROM_URL|$TO_URL|g" "$TMP"
-          else
-            echo "⚠ No policy exists — creating full policy"
-            echo "<policies><inbound><base/><set-backend-service base-url=\"$TO_URL\"/></inbound><backend><base/></backend><outbound><base/></outbound><on-error><base/></on-error></policies>" > "$TMP"
-          fi
-
-          echo "🚀 Uploading via CLI..."
-          if az apim api operation policy update \
+            --query "value" -o tsv > "$TMP" 2>/dev/null || continue
+          # TRY UPLOAD AND CAPTURE ONLY ERROR
+          echo "🚨 Error from Azure:"
+          az apim api operation policy update \
             --resource-group "$RESOURCE_GROUP" \
             --service-name "$APIM_NAME" \
             --api-id "$API_ID" \
             --operation-id "$op" \
-            --value @"$TMP" >/dev/null 2>&1; then
-            echo "✔ SUCCESS updated: $op"
-          else
-            echo "❌ FAILED: $op"
-          fi
-
+            --value @"$TMP" 2>&1 | grep -E "ERROR|BadRequest|Validation|Forbidden|Unsupported|Conflict"
           rm -f "$TMP"
         done
-
-        echo "🎉 DR Switch Complete (Only operation policies updated)"
