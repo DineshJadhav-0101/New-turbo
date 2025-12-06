@@ -11,6 +11,7 @@ jobs:
       RESOURCE_GROUP: "Dinesh-Test-resource-Group"
       APIM_NAME: "APIM-TESTNGT"
       API_ID: "TestUrl"
+      API_VERSION: "2022-08-01"
 
     steps:
     - name: Azure Login
@@ -24,25 +25,44 @@ jobs:
           --password "$AZURE_CLIENT_SECRET" \
           --tenant "$AZURE_TENANT_ID"
 
-    - name: Show Real APIM Error
+    - name: Show upload error for each operation (no modification)
       run: |
-        OPS=$(az apim api operation list --resource-group "$RESOURCE_GROUP" --service-name "$APIM_NAME" --api-id "$API_ID" --query "[].name" -o tsv)
+        set -euo pipefail
+        
+        echo "📌 Fetching operations..."
+        OPS=$(az apim api operation list \
+          --resource-group "$RESOURCE_GROUP" \
+          --service-name "$APIM_NAME" \
+          --api-id "$API_ID" \
+          --query "[].name" -o tsv)
+
         for op in $OPS; do
-          echo "🔍 Testing $op"
+          echo "---------------------------------------------"
+          echo "🔍 Testing upload for: $op"
+          echo "---------------------------------------------"
+          
           TMP=$(mktemp)
+
+          # Fetch existing policy (raw XML)
           az apim api operation policy show \
             --resource-group "$RESOURCE_GROUP" \
             --service-name "$APIM_NAME" \
             --api-id "$API_ID" \
             --operation-id "$op" \
-            --query "value" -o tsv > "$TMP" 2>/dev/null || continue
-          # TRY UPLOAD AND CAPTURE ONLY ERROR
-          echo "🚨 Error from Azure:"
+            --query "value" -o tsv > "$TMP" || {
+              echo "⚠ No existing policy for $op"
+              continue
+          }
+
+          # Try to upload SAME policy back to trigger the error
+          echo "🚀 Uploading same policy back (DEBUG MODE)..."
           az apim api operation policy update \
             --resource-group "$RESOURCE_GROUP" \
             --service-name "$APIM_NAME" \
             --api-id "$API_ID" \
             --operation-id "$op" \
-            --value @"$TMP" 2>&1 | grep -E "ERROR|BadRequest|Validation|Forbidden|Unsupported|Conflict"
+            --value @"$TMP" --debug
+          
           rm -f "$TMP"
+          echo "---------------------------------------------"
         done
