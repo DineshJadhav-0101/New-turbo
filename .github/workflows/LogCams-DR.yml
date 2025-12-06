@@ -1,0 +1,138 @@
+name: Log-Cams-DR
+
+on:
+  workflow_dispatch:
+    inputs:
+      direction:
+        description: "Switch direction"
+        required: true
+        type: choice
+        options:
+          - prod-to-dr
+          - dr-to-prod
+
+jobs:
+  switch-backend:
+    runs-on: ubuntu-latest
+
+    env:
+      # APIM INFO
+      RESOURCE_GROUP: "Dinesh-Test-resource-Group"
+      APIM_NAME: "APIM-TESTNGT"
+      API_ID: "TestUrl"
+
+      # URLs
+      PROD_URL: "http://dinesh.com"
+      DR_URL: "http://dinesh1.com"
+      API_VERSION: "2022-08-01"
+
+      # LOG STORAGE (UPDATED)
+      STORAGE_ACCOUNT: "teststorageaccounttes"
+      CONTAINER: "target"
+
+    steps:
+    - name: Azure Login
+      env:
+        AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+        AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      run: |
+        az login --service-principal \
+          --username "$AZURE_CLIENT_ID" \
+          --password "$AZURE_CLIENT_SECRET" \
+          --tenant "$AZURE_TENANT_ID"
+
+    - name: Decide Direction
+      id: decide
+      run: |
+        if [ "${{ github.event.inputs.direction }}" = "prod-to-dr" ]; then
+          echo "FROM_URL=http://dinesh.com" >> $GITHUB_OUTPUT
+          echo "TO_URL=http://dinesh1.com" >> $GITHUB_OUTPUT
+          echo "SWITCH_MSG=Prod → DR" >> $GITHUB_OUTPUT
+        else
+          echo "FROM_URL=http://dinesh1.com" >> $GITHUB_OUTPUT
+          echo "TO_URL=http://dinesh.com" >> $GITHUB_OUTPUT
+          echo "SWITCH_MSG=DR → Prod" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Ensure Target Container Exists
+      run: |
+        az storage container create \
+          --name $CONTAINER \
+          --account-name $STORAGE_ACCOUNT \
+          --account-key ${{ secrets.AZURE_STORAGE_KEY }} \
+          1>/dev/null
+        echo "📦 Log Container Ready: $CONTAINER"
+
+    - name: Update Operation Backend URL + Save Log
+      env:
+        FROM_URL: ${{ steps.decide.outputs.FROM_URL }}
+        TO_URL: ${{ steps.decide.outputs.TO_URL }}
+        SWITCH_MSG: ${{ steps.decide.outputs.SWITCH_MSG }}
+      run: |
+        set -euo pipefail
+        SUBS_ID=$(az account show --query id -o tsv)
+
+        OPS=$(az apim api operation list \
+          --resource-group "$RESOURCE_GROUP" \
+          --service-name "$APIM_NAME" \
+          --api-id "$API_ID" \
+          --query "[].name" -o tsv)
+
+        urlencode() { local s="$1"; local l=${#s}; for ((i=0;i<l;i++)); do c="${s:i:1}"; [[ "$c" =~ [a-zA-Z0-9.~_-] ]] && printf "%s" "$c" || printf '%%%02X' "'$c"; done; }
+
+        UPDATED_OPS=()
+
+        for op in $OPS; do
+          echo "🔍 OPERATION: $op"
+          ENCODED=$(urlencode "$op")
+          URI="https://management.azure.com/subscriptions/$SUBS_ID/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.ApiManagement/service/$APIM_NAME/apis/$API_ID/operations/$ENCODED/policies/policy?api-version=$API_VERSION"
+
+          TMP=$(mktemp)
+
+          if ! az rest --method get --uri "$URI" \
+              --headers "Accept=application/vnd.ms-azure-apim.policy+xml" \
+              --output-file "$TMP" >/dev/null 2>&1; then
+                XML="<policies><inbound><base/><set-backend-service base-url=\"$TO_URL\"/></inbound><backend><base/></backend><outbound><base/></outbound><on-error><base/></on-error></policies>"
+          else
+                sed -i '1s/^\xEF\xBB\xBF//' "$TMP"
+                if ! grep -q "$FROM_URL" "$TMP"; then
+                  echo "⏭ Skip (No matching URL)"
+                  rm -f "$TMP"
+                  continue
+                fi
+                sed -i "s|$FROM_URL|$TO_URL|g" "$TMP"
+                XML=$(cat "$TMP")
+          fi
+
+          rm -f "$TMP"
+
+          BODY=$(jq -n --arg v "$XML" '{properties:{format:"rawxml",value:$v}}')
+          echo "🚀 Uploading..."
+          az rest --method put --uri "$URI" \
+            --headers "Content-Type=application/json" \
+            --headers "If-Match=*" \
+            --body "$BODY" 1>/dev/null
+
+          UPDATED_OPS+=("$op")
+          echo "✔ SUCCESS: $op Updated"
+        done
+
+        # ---- LOGGING ----
+        TS=$(date '+%Y-%m-%d %H:%M:%S')
+        DATE_FILE=$(date '+apim-switch-%Y-%m-%d.log')
+        OPS_LIST=$(printf "%s" "${UPDATED_OPS[*]:-None}")
+
+        LOG_LINE="[$TS] Switch: $SWITCH_MSG | Updated Operations: $OPS_LIST"
+        echo "$LOG_LINE" > logtmp.txt
+
+        az storage blob upload \
+          --account-name $STORAGE_ACCOUNT \
+          --account-key ${{ secrets.AZURE_STORAGE_KEY }} \
+          --container-name $CONTAINER \
+          --file logtmp.txt \
+          --name "$DATE_FILE" \
+          --overwrite true 1>/dev/null
+
+        echo "📝 LOG SAVED: $LOG_LINE"
+        echo "🎉 DR Switch Completed Successfully!"
