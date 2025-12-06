@@ -71,12 +71,13 @@ jobs:
 
           TMP=$(mktemp)
 
+          # Retrieve existing policy
           if ! az rest --method get --uri "$POLICY_URI" \
-               --headers "Accept=application/vnd.ms-azure-apim.policy+xml" \
-               --output-file "$TMP" >/dev/null 2>&1; then
-            
-            echo "⚠ No existing policy. Creating new policy..."
-            echo "<policies><inbound><base/><set-backend-service base-url=\"$TO_URL\"/></inbound><backend><base/></backend><outbound><base/></outbound><on-error><base/></on-error></policies>" > "$TMP"
+              --headers "Accept=application/vnd.ms-azure-apim.policy+xml" \
+              --output-file "$TMP" >/dev/null 2>&1; then
+
+            echo "⚠ No policy found. Creating new..."
+            XML="<policies><inbound><base/><set-backend-service base-url=\"$TO_URL\"/></inbound><backend><base/></backend><outbound><base/></outbound><on-error><base/></on-error></policies>"
           
           else
             if ! grep -q "$FROM_URL" "$TMP"; then
@@ -84,19 +85,26 @@ jobs:
               rm -f "$TMP"
               continue
             fi
-            echo "✏ Updating URL..."
+
             sed -i "s|$FROM_URL|$TO_URL|g" "$TMP"
+            XML=$(cat "$TMP")
           fi
 
-          echo "🚀 Uploading Updated Policy..."
+          rm -f "$TMP"
+
+          # Escape XML for JSON
+          XML_ESCAPED=$(echo "$XML" | sed 's/"/\\"/g' | sed 's/$/\\n/' )
+
+          # Create JSON Envelope
+          BODY=$(jq -n --arg v "$XML_ESCAPED" '{properties:{format:"rawxml",value:$v}}')
+
+          echo "🚀 Uploading JSON policy..."
           az rest --method put --uri "$POLICY_URI" \
-            --headers "Content-Type=application/vnd.ms-azure-apim.policy+xml" \
-            --headers "Accept=application/vnd.ms-azure-apim.policy+xml" \
+            --headers "Content-Type=application/json" \
             --headers "If-Match=*" \
-            --body @"$TMP"
+            --body "$BODY"
 
           echo "✔ SUCCESS Updated: $op"
-          rm -f "$TMP"
         done
 
         echo "🎉 COMPLETED — Operation Backend URLs Switched!"
