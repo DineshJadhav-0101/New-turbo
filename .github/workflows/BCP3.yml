@@ -47,14 +47,13 @@ jobs:
           echo "TO_URL=http://dinesh.com" >> $GITHUB_OUTPUT
         fi
 
-    - name: Update Operation Policies
+    - name: Update Operation Backend URLs
       env:
         FROM_URL: ${{ steps.decide.outputs.FROM_URL }}
         TO_URL: ${{ steps.decide.outputs.TO_URL }}
       run: |
         set -euo pipefail
         SUBS_ID=$(az account show --query id -o tsv)
-
         OPS=$(az apim api operation list \
           --resource-group "$RESOURCE_GROUP" \
           --service-name "$APIM_NAME" \
@@ -65,41 +64,32 @@ jobs:
 
         for op in $OPS; do
           echo "🔍 OPERATION: $op"
-
           ENCODED=$(urlencode "$op")
           POLICY_URI="https://management.azure.com/subscriptions/$SUBS_ID/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.ApiManagement/service/$APIM_NAME/apis/$API_ID/operations/$ENCODED/policies/policy?api-version=$API_VERSION"
 
           TMP=$(mktemp)
 
-          # Retrieve policy
+          # Fetch existing XML
           if ! az rest --method get --uri "$POLICY_URI" \
               --headers "Accept=application/vnd.ms-azure-apim.policy+xml" \
               --output-file "$TMP" >/dev/null 2>&1; then
-
-            echo "⚠ No policy found. Creating new XML..."
-            XML="<policies><inbound><base/><set-backend-service base-url=\"$TO_URL\"/></inbound><backend><base/></backend><outbound><base/></outbound><on-error><base/></on-error></policies>"
-
+              echo "⚠ No existing policy. Creating fresh policy."
+              XML="<policies><inbound><base/><set-backend-service base-url=\"$TO_URL\"/></inbound><backend><base/></backend><outbound><base/></outbound><on-error><base/></on-error></policies>"
           else
-
-            # Remove BOM at file start if exists
-            sed -i '1s/^\xEF\xBB\xBF//' "$TMP"
-
-            if ! grep -q "$FROM_URL" "$TMP"; then
-              echo "⏭ Skip (No matching URL)"
-              rm -f "$TMP"
-              continue
-            fi
-
-            sed -i "s|$FROM_URL|$TO_URL|g" "$TMP"
-            XML=$(cat "$TMP")
+              sed -i '1s/^\xEF\xBB\xBF//' "$TMP"
+              if ! grep -q "$FROM_URL" "$TMP"; then
+                echo "⏭ Skip (No matching URL)"
+                rm -f "$TMP"
+                continue
+              fi
+              sed -i "s|$FROM_URL|$TO_URL|g" "$TMP"
+              XML=$(cat "$TMP")
           fi
 
           rm -f "$TMP"
 
-          # Escape XML quotes ONLY
-          XML_ESCAPED=$(printf '%s' "$XML" | sed 's/"/\\"/g')
-
-          BODY=$(jq -n --arg v "$XML_ESCAPED" '{properties:{format:"rawxml",value:$v}}')
+          # Prepare JSON without escaping quotes
+          BODY=$(jq -n --arg v "$XML" '{properties:{format:"rawxml",value:$v}}')
 
           echo "🚀 Uploading..."
           az rest --method put --uri "$POLICY_URI" \
