@@ -36,18 +36,18 @@ jobs:
           --password "$AZURE_CLIENT_SECRET" \
           --tenant "$AZURE_TENANT_ID"
 
-    - name: Decide URL Direction
+    - name: Decide Direction
       id: decide
       run: |
         if [ "${{ github.event.inputs.direction }}" = "prod-to-dr" ]; then
-          echo "FROM_URL=$PROD_URL" >> $GITHUB_OUTPUT
-          echo "TO_URL=$DR_URL" >> $GITHUB_OUTPUT
+          echo "FROM_URL=http://dinesh.com" >> $GITHUB_OUTPUT
+          echo "TO_URL=http://dinesh1.com" >> $GITHUB_OUTPUT
         else
-          echo "FROM_URL=$DR_URL" >> $GITHUB_OUTPUT
-          echo "TO_URL=$PROD_URL" >> $GITHUB_OUTPUT
+          echo "FROM_URL=http://dinesh1.com" >> $GITHUB_OUTPUT
+          echo "TO_URL=http://dinesh.com" >> $GITHUB_OUTPUT
         fi
 
-    - name: Modify Operation Policies with ETag
+    - name: Update Operation Policies
       env:
         FROM_URL: ${{ steps.decide.outputs.FROM_URL }}
         TO_URL: ${{ steps.decide.outputs.TO_URL }}
@@ -55,57 +55,48 @@ jobs:
         set -euo pipefail
         SUBS_ID=$(az account show --query id -o tsv)
 
-        echo "📌 Fetching operations..."
         OPS=$(az apim api operation list \
           --resource-group "$RESOURCE_GROUP" \
           --service-name "$APIM_NAME" \
           --api-id "$API_ID" \
           --query "[].name" -o tsv)
 
-        urlencode() {
-          local s="$1"; local l=${#s}
-          for ((i=0;i<l;i++)); do
-            c="${s:i:1}"
-            [[ "$c" =~ [a-zA-Z0-9.~_-] ]] && printf "%s" "$c" || printf '%%%02X' "'$c"
-          done
-        }
+        urlencode() { local s="$1"; local l=${#s}; for ((i=0;i<l;i++)); do c="${s:i:1}"; [[ "$c" =~ [a-zA-Z0-9.~_-] ]] && printf "%s" "$c" || printf '%%%02X' "'$c"; done; }
 
         for op in $OPS; do
-          echo "🔍 Operation: $op"
-          ENCODED=$(urlencode "$op")
+          echo "🔍 OPERATION: $op"
 
+          ENCODED=$(urlencode "$op")
           POLICY_URI="https://management.azure.com/subscriptions/$SUBS_ID/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.ApiManagement/service/$APIM_NAME/apis/$API_ID/operations/$ENCODED/policies/policy?api-version=$API_VERSION"
 
           TMP=$(mktemp)
 
-          # GET XML
           if ! az rest --method get --uri "$POLICY_URI" \
-                --headers "Accept=application/vnd.ms-azure-apim.policy+xml" \
-                --output-file "$TMP" >/dev/null 2>&1; then
-            echo "⚠ No policy found, creating new..."
-            echo "<policies><inbound><base /><set-backend-service base-url=\"$TO_URL\" /></inbound><backend><base /></backend><outbound><base /></outbound><on-error><base /></on-error></policies>" > "$TMP"
+               --headers "Accept=application/vnd.ms-azure-apim.policy+xml" \
+               --output-file "$TMP" >/dev/null 2>&1; then
+            
+            echo "⚠ No existing policy. Creating new policy..."
+            echo "<policies><inbound><base/><set-backend-service base-url=\"$TO_URL\"/></inbound><backend><base/></backend><outbound><base/></outbound><on-error><base/></on-error></policies>" > "$TMP"
+          
           else
             if ! grep -q "$FROM_URL" "$TMP"; then
-              echo "⏭ Skip (no matching URL)"
+              echo "⏭ Skipping (No match URL)"
               rm -f "$TMP"
               continue
             fi
-            echo "✏ Replacing URL..."
+            echo "✏ Updating URL..."
             sed -i "s|$FROM_URL|$TO_URL|g" "$TMP"
           fi
 
-          # FORCE POLICY OVERWRITE USING ETag *
-          echo "🚀 Upload with If-Match: *"
-          if az rest --method put --uri "$POLICY_URI" \
+          echo "🚀 Uploading Updated Policy..."
+          az rest --method put --uri "$POLICY_URI" \
             --headers "Content-Type=application/vnd.ms-azure-apim.policy+xml" \
-            --headers "If-Match: *" \
-            --body @"$TMP"; then
-            echo "✔ Updated $op"
-          else
-            echo "❌ FAILED updating $op"
-          fi
+            --headers "Accept=application/vnd.ms-azure-apim.policy+xml" \
+            --headers "If-Match=*" \
+            --body @"$TMP"
 
+          echo "✔ SUCCESS Updated: $op"
           rm -f "$TMP"
         done
 
-        echo "🎉 COMPLETED: Only operation backend URLs switched!"
+        echo "🎉 COMPLETED — Operation Backend URLs Switched!"
