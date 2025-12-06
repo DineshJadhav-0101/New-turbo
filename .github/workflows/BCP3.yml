@@ -1,18 +1,27 @@
-name: APIM-DR
+name: APIM-DR-Operation-Switch
 
 on:
   workflow_dispatch:
+    inputs:
+      direction:
+        description: "Switch direction"
+        required: true
+        type: choice
+        options:
+          - prod-to-dr
+          - dr-to-prod
 
 jobs:
-  debug:
+  switch:
     runs-on: ubuntu-latest
-
+    
     env:
       RESOURCE_GROUP: "Dinesh-Test-resource-Group"
       APIM_NAME: "APIM-TESTNGT"
       API_ID: "TestUrl"
-      TEST_URL: "http://dinesh1.com"
-      API_VERSION: "2022-08-01"
+
+      PROD_URL: "http://dinesh.com"
+      DR_URL: "http://dinesh1.com"
 
     steps:
     - name: Azure Login
@@ -26,7 +35,21 @@ jobs:
           --password "$AZURE_CLIENT_SECRET" \
           --tenant "$AZURE_TENANT_ID"
 
-    - name: Find policy error by forcing upload with full debug output
+    - name: Decide URLs
+      id: decide
+      run: |
+        if [ "${{ github.event.inputs.direction }}" = "prod-to-dr" ]; then
+          echo "FROM_URL=$PROD_URL" >> $GITHUB_OUTPUT
+          echo "TO_URL=$DR_URL" >> $GITHUB_OUTPUT
+        else
+          echo "FROM_URL=$DR_URL" >> $GITHUB_OUTPUT
+          echo "TO_URL=$PROD_URL" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Switch Operation URLs
+      env:
+        FROM_URL: ${{ steps.decide.outputs.FROM_URL }}
+        TO_URL: ${{ steps.decide.outputs.TO_URL }}
       run: |
         set -euo pipefail
 
@@ -40,35 +63,45 @@ jobs:
         urlencode() { local s="${1}"; local l=${#s}; for ((i=0;i<l;i++)); do c="${s:i:1}"; [[ "$c" =~ [a-zA-Z0-9.~_-] ]] && printf "$c" || printf '%%%02X' "'$c"; done; }
 
         for op in $OP_IDS; do
-          echo "🔍 Testing upload on operation: $op"
+          echo "🔍 Operation: $op"
+          ENCODED_OP=$(urlencode "$op")
 
-          # Fetch existing policy XML (raw)
           TMP=$(mktemp)
-          if ! az apim api operation policy show \
+
+          echo "📥 Checking existing policy..."
+          if az apim api operation policy show \
             --resource-group "$RESOURCE_GROUP" \
             --service-name "$APIM_NAME" \
             --api-id "$API_ID" \
             --operation-id "$op" \
             --query "value" -o tsv > "$TMP" 2>/dev/null; then
-            echo "⚠ No existing policy for $op"
-            rm -f "$TMP"
-            continue
+
+            if ! grep -q "$FROM_URL" "$TMP"; then
+              echo "⏭ No matching URL — skip"
+              rm -f "$TMP"
+              continue
+            fi
+
+            echo "✏ Replacing URL..."
+            sed -i "s|$FROM_URL|$TO_URL|g" "$TMP"
+          else
+            echo "⚠ No policy exists — creating full policy"
+            echo "<policies><inbound><base/><set-backend-service base-url=\"$TO_URL\"/></inbound><backend><base/></backend><outbound><base/></outbound><on-error><base/></on-error></policies>" > "$TMP"
           fi
 
-          # Try to force upload of the same file (no changes)
-          echo "🚀 Testing upload (debug mode)..."
-          echo "---------------------------------------------"
-          echo "Operation: $op"
-          echo "---------------------------------------------"
-
-          # IMPORTANT: try uploading same content to see error
-          az apim api operation policy update \
+          echo "🚀 Uploading via CLI..."
+          if az apim api operation policy update \
             --resource-group "$RESOURCE_GROUP" \
             --service-name "$APIM_NAME" \
             --api-id "$API_ID" \
             --operation-id "$op" \
-            --value @"$TMP" --debug
+            --value @"$TMP" >/dev/null 2>&1; then
+            echo "✔ SUCCESS updated: $op"
+          else
+            echo "❌ FAILED: $op"
+          fi
 
-          echo "---------------------------------------------"
           rm -f "$TMP"
         done
+
+        echo "🎉 DR Switch Complete (Only operation policies updated)"
