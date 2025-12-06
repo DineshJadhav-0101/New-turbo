@@ -1,17 +1,27 @@
-name: APIM-DEBUG
+name: APIM-DR
 
 on:
   workflow_dispatch:
+    inputs:
+      direction:
+        description: "Switch direction"
+        required: true
+        type: choice
+        options:
+          - prod-to-dr
+          - dr-to-prod
 
 jobs:
-  debug:
+  switch-backend:
     runs-on: ubuntu-latest
 
     env:
       RESOURCE_GROUP: "Dinesh-Test-resource-Group"
       APIM_NAME: "APIM-TESTNGT"
       API_ID: "TestUrl"
-      API_VERSION: "2022-08-01"
+
+      PROD_URL: "http://dinesh.com"
+      DR_URL: "http://dinesh1.com"
 
     steps:
     - name: Azure Login
@@ -25,11 +35,28 @@ jobs:
           --password "$AZURE_CLIENT_SECRET" \
           --tenant "$AZURE_TENANT_ID"
 
-    - name: Show upload error for each operation (no modification)
+    - name: 🔧 Install APIM Policy Extension
+      run: |
+        az extension add --name apim --upgrade
+
+    - name: Decide URLs
+      id: decide
+      run: |
+        if [ "${{ github.event.inputs.direction }}" = "prod-to-dr" ]; then
+          echo "FROM_URL=http://dinesh.com" >> $GITHUB_OUTPUT
+          echo "TO_URL=http://dinesh1.com" >> $GITHUB_OUTPUT
+        else
+          echo "FROM_URL=http://dinesh1.com" >> $GITHUB_OUTPUT
+          echo "TO_URL=http://dinesh.com" >> $GITHUB_OUTPUT
+        fi
+
+    - name: 🛠 Switch Operation Backend
+      env:
+        FROM_URL: ${{ steps.decide.outputs.FROM_URL }}
+        TO_URL: ${{ steps.decide.outputs.TO_URL }}
       run: |
         set -euo pipefail
-        
-        echo "📌 Fetching operations..."
+
         OPS=$(az apim api operation list \
           --resource-group "$RESOURCE_GROUP" \
           --service-name "$APIM_NAME" \
@@ -37,32 +64,40 @@ jobs:
           --query "[].name" -o tsv)
 
         for op in $OPS; do
-          echo "---------------------------------------------"
-          echo "🔍 Testing upload for: $op"
-          echo "---------------------------------------------"
-          
+          echo "🔍 Checking $op"
+
           TMP=$(mktemp)
 
-          # Fetch existing policy (raw XML)
-          az apim api operation policy show \
+          if ! az apim api operation policy show \
             --resource-group "$RESOURCE_GROUP" \
             --service-name "$APIM_NAME" \
             --api-id "$API_ID" \
             --operation-id "$op" \
-            --query "value" -o tsv > "$TMP" || {
-              echo "⚠ No existing policy for $op"
+            --query "value" -o tsv > "$TMP" 2>/dev/null; then
+            
+            echo "⚠ No policy: Creating new for $op"
+            echo "<policies><inbound><base/><set-backend-service base-url=\"$TO_URL\"/></inbound><backend><base/></backend><outbound><base/></outbound><on-error><base/></on-error></policies>" > "$TMP"
+          else
+            if grep -q "$FROM_URL" "$TMP"; then
+              echo "✏ Replacing URL in $op..."
+              sed -i "s|$FROM_URL|$TO_URL|g" "$TMP"
+            else
+              echo "⏭ Skipping (no match) for $op"
+              rm -f "$TMP"
               continue
-          }
+            fi
+          fi
 
-          # Try to upload SAME policy back to trigger the error
-          echo "🚀 Uploading same policy back (DEBUG MODE)..."
+          echo "🚀 Uploading policy for $op"
           az apim api operation policy update \
             --resource-group "$RESOURCE_GROUP" \
             --service-name "$APIM_NAME" \
             --api-id "$API_ID" \
             --operation-id "$op" \
-            --value @"$TMP" --debug
-          
+            --value @"$TMP"
+
+          echo "✔ Updated $op"
           rm -f "$TMP"
-          echo "---------------------------------------------"
         done
+
+        echo "🎉 DR Switch Complete!"
