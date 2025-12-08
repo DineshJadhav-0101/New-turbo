@@ -1,4 +1,4 @@
-name: Log-Cams-DR
+name: APIM-DR
 
 on:
   workflow_dispatch:
@@ -26,11 +26,12 @@ jobs:
       DR_URL: "http://dinesh1.com"
       API_VERSION: "2022-08-01"
 
-      # LOG STORAGE (UPDATED)
+      # LOG STORAGE (UPDATED as requested)
       STORAGE_ACCOUNT: "teststorageaccounttes"
       CONTAINER: "target"
 
     steps:
+    # ---------------------- LOGIN ----------------------
     - name: Azure Login
       env:
         AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
@@ -42,6 +43,7 @@ jobs:
           --password "$AZURE_CLIENT_SECRET" \
           --tenant "$AZURE_TENANT_ID"
 
+    # ---------------------- DECIDE SWITCH ----------------------
     - name: Decide Direction
       id: decide
       run: |
@@ -55,6 +57,15 @@ jobs:
           echo "SWITCH_MSG=DR → Prod" >> $GITHUB_OUTPUT
         fi
 
+    # ---------------------- NOTIFY START ----------------------
+    - name: Notify Start (Slack/Teams)
+      env:
+        SWITCH_MSG: ${{ steps.decide.outputs.SWITCH_MSG }}
+        WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
+      run: |
+        curl -X POST -H "Content-Type: application/json" -d "{\"text\":\"🔄 *APIM DR Switch Started* — $SWITCH_MSG\"}" "$WEBHOOK_URL"
+
+    # ---------------------- PREPARE STORAGE ----------------------
     - name: Ensure Target Container Exists
       run: |
         az storage container create \
@@ -62,8 +73,8 @@ jobs:
           --account-name $STORAGE_ACCOUNT \
           --account-key ${{ secrets.AZURE_STORAGE_KEY }} \
           1>/dev/null
-        echo "📦 Log Container Ready: $CONTAINER"
 
+    # ---------------------- SWITCH BACKEND PER OPERATION ----------------------
     - name: Update Operation Backend URL + Save Log
       env:
         FROM_URL: ${{ steps.decide.outputs.FROM_URL }}
@@ -72,6 +83,10 @@ jobs:
       run: |
         set -euo pipefail
         SUBS_ID=$(az account show --query id -o tsv)
+
+        TS=$(date '+%Y-%m-%d %H:%M:%S')
+        START_LOG="[$TS] START: $SWITCH_MSG"
+        echo "$START_LOG" > logtmp.txt
 
         OPS=$(az apim api operation list \
           --resource-group "$RESOURCE_GROUP" \
@@ -84,10 +99,8 @@ jobs:
         UPDATED_OPS=()
 
         for op in $OPS; do
-          echo "🔍 OPERATION: $op"
           ENCODED=$(urlencode "$op")
           URI="https://management.azure.com/subscriptions/$SUBS_ID/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.ApiManagement/service/$APIM_NAME/apis/$API_ID/operations/$ENCODED/policies/policy?api-version=$API_VERSION"
-
           TMP=$(mktemp)
 
           if ! az rest --method get --uri "$URI" \
@@ -97,7 +110,6 @@ jobs:
           else
                 sed -i '1s/^\xEF\xBB\xBF//' "$TMP"
                 if ! grep -q "$FROM_URL" "$TMP"; then
-                  echo "⏭ Skip (No matching URL)"
                   rm -f "$TMP"
                   continue
                 fi
@@ -106,25 +118,21 @@ jobs:
           fi
 
           rm -f "$TMP"
-
           BODY=$(jq -n --arg v "$XML" '{properties:{format:"rawxml",value:$v}}')
-          echo "🚀 Uploading..."
           az rest --method put --uri "$URI" \
             --headers "Content-Type=application/json" \
             --headers "If-Match=*" \
             --body "$BODY" 1>/dev/null
 
           UPDATED_OPS+=("$op")
-          echo "✔ SUCCESS: $op Updated"
+          echo "✔ Updated: $op"
         done
 
-        # ---- LOGGING ----
-        TS=$(date '+%Y-%m-%d %H:%M:%S')
-        DATE_FILE=$(date '+apim-switch-%Y-%m-%d.log')
-        OPS_LIST=$(printf "%s" "${UPDATED_OPS[*]:-None}")
+        END_TS=$(date '+%Y-%m-%d %H:%M:%S')
+        END_LOG="[$END_TS] COMPLETE: $SWITCH_MSG | Updated: ${UPDATED_OPS[*]:-None}"
+        echo "$END_LOG" >> logtmp.txt
 
-        LOG_LINE="[$TS] Switch: $SWITCH_MSG | Updated Operations: $OPS_LIST"
-        echo "$LOG_LINE" > logtmp.txt
+        DATE_FILE=$(date '+apim-switch-%Y-%m-%d.log')
 
         az storage blob upload \
           --account-name $STORAGE_ACCOUNT \
@@ -134,5 +142,13 @@ jobs:
           --name "$DATE_FILE" \
           --overwrite true 1>/dev/null
 
-        echo "📝 LOG SAVED: $LOG_LINE"
-        echo "🎉 DR Switch Completed Successfully!"
+        echo "📄 LOG SAVED: $END_LOG"
+
+    # ---------------------- NOTIFY COMPLETE ----------------------
+    - name: Notify Complete (Slack/Teams)
+      if: always()
+      env:
+        SWITCH_MSG: ${{ steps.decide.outputs.SWITCH_MSG }}
+        WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
+      run: |
+        curl -X POST -H "Content-Type: application/json" -d "{\"text\":\"🎉 *APIM DR Switch Completed* — $SWITCH_MSG\"}" "$WEBHOOK_URL"
