@@ -16,6 +16,7 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
+      # APIM INFO
       RESOURCE_GROUP: "Dinesh-Test-resource-Group"
       APIM_NAME: "APIM-TESTNGT"
       API_ID: "TestUrl"
@@ -52,16 +53,15 @@ jobs:
           echo "SWITCH_MSG=DR → Prod" >> $GITHUB_OUTPUT
         fi
 
-    - name: Notify Start (Slack/Teams)
+    - name: Notify Start
       env:
         SWITCH_MSG: ${{ steps.decide.outputs.SWITCH_MSG }}
         WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
       run: |
-        curl -X POST "$WEBHOOK_URL" \
-             -H "Content-Type: application/json" \
-             -d "{\"text\": \"🔄 APIM DR Switch Started — $SWITCH_MSG\"}"
+        echo "{\"text\":\"🔄 APIM DR Switch Started — $SWITCH_MSG\"}" > notify.json
+        curl -X POST -H "Content-Type: application/json" -d @notify.json "$WEBHOOK_URL"
 
-    - name: Ensure Log Container Exists
+    - name: Create Logging Container
       run: |
         az storage container create \
           --name $CONTAINER \
@@ -69,7 +69,7 @@ jobs:
           --account-key ${{ secrets.AZURE_STORAGE_KEY }} \
           1>/dev/null
 
-    - name: Update Operation Backend + Save Log
+    - name: Update Operation Backends + Logging
       env:
         FROM_URL: ${{ steps.decide.outputs.FROM_URL }}
         TO_URL: ${{ steps.decide.outputs.TO_URL }}
@@ -94,35 +94,36 @@ jobs:
         for op in $OPS; do
           ENCODED=$(urlencode "$op")
           URI="https://management.azure.com/subscriptions/$SUBS_ID/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.ApiManagement/service/$APIM_NAME/apis/$API_ID/operations/$ENCODED/policies/policy?api-version=$API_VERSION"
+
           TMP=$(mktemp)
 
           if ! az rest --method get --uri "$URI" \
               --headers "Accept=application/vnd.ms-azure-apim.policy+xml" \
               --output-file "$TMP" >/dev/null 2>&1; then
-                XML="<policies><inbound><base/><set-backend-service base-url=\"$TO_URL\"/></inbound><backend><base/></backend><outbound><base/></outbound><on-error><base/></on-error></policies>"
+            XML="<policies><inbound><base/><set-backend-service base-url=\"$TO_URL\"/></inbound><backend><base/></backend><outbound><base/></outbound><on-error><base/></on-error></policies>"
           else
-                sed -i '1s/^\xEF\xBB\xBF//' "$TMP"
-                if ! grep -q "$FROM_URL" "$TMP"; then
-                  rm -f "$TMP"
-                  continue
-                fi
-                sed -i "s|$FROM_URL|$TO_URL|g" "$TMP"
-                XML=$(cat "$TMP")
+            sed -i '1s/^\xEF\xBB\xBF//' "$TMP"
+            if ! grep -q "$FROM_URL" "$TMP"; then
+              rm -f "$TMP"
+              continue
+            fi
+            sed -i "s|$FROM_URL|$TO_URL|g" "$TMP"
+            XML=$(cat "$TMP")
           fi
 
           rm -f "$TMP"
           BODY=$(jq -n --arg v "$XML" '{properties:{format:"rawxml",value:$v}}')
+
           az rest --method put --uri "$URI" \
             --headers "Content-Type=application/json" \
             --headers "If-Match=*" \
             --body "$BODY" >/dev/null
 
           UPDATED_OPS+=("$op")
-          echo "✔ Updated: $op"
         done
 
         END_TS=$(date '+%Y-%m-%d %H:%M:%S')
-        echo "[$END_TS] COMPLETE: $SWITCH_MSG | Updated: ${UPDATED_OPS[*]:-None}" >> logtmp.txt
+        echo "[$END_TS] COMPLETE: $SWITCH_MSG | Updated Operations: ${UPDATED_OPS[*]:-None}" >> logtmp.txt
 
         DATE_FILE=$(date '+apim-switch-%Y-%m-%d.log')
 
@@ -134,12 +135,11 @@ jobs:
           --name "$DATE_FILE" \
           --overwrite true >/dev/null
 
-    - name: Notify Complete (Slack/Teams)
+    - name: Notify Complete
       if: always()
       env:
         SWITCH_MSG: ${{ steps.decide.outputs.SWITCH_MSG }}
         WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
       run: |
-        curl -X POST "$WEBHOOK_URL" \
-             -H "Content-Type: application/json" \
-             -d "{\"text\": \"🎉 APIM DR Switch Completed — $SWITCH_MSG\"}"
+        echo "{\"text\":\"🎉 APIM DR Switch Completed — $SWITCH_MSG\"}" > notify.json
+        curl -X POST -H "Content-Type: application/json" -d @notify.json "$WEBHOOK_URL"
