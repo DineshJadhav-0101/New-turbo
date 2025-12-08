@@ -16,22 +16,18 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      # APIM INFO
       RESOURCE_GROUP: "Dinesh-Test-resource-Group"
       APIM_NAME: "APIM-TESTNGT"
       API_ID: "TestUrl"
 
-      # URLs
       PROD_URL: "http://dinesh.com"
       DR_URL: "http://dinesh1.com"
       API_VERSION: "2022-08-01"
 
-      # LOG STORAGE
       STORAGE_ACCOUNT: "teststorageaccounttes"
       CONTAINER: "target"
 
     steps:
-    # ---------------- LOGIN ----------------
     - name: Azure Login
       env:
         AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
@@ -43,7 +39,6 @@ jobs:
           --password "$AZURE_CLIENT_SECRET" \
           --tenant "$AZURE_TENANT_ID"
 
-    # ---------------- DECIDE DIR ----------------
     - name: Decide Direction
       id: decide
       run: |
@@ -57,18 +52,15 @@ jobs:
           echo "SWITCH_MSG=DR → Prod" >> $GITHUB_OUTPUT
         fi
 
-    # ---------------- NOTIFY START ----------------
     - name: Notify Start (Slack/Teams)
       env:
         SWITCH_MSG: ${{ steps.decide.outputs.SWITCH_MSG }}
         WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
       run: |
-        curl -X POST \
-        -H "Content-Type: application/json" \
-        --data-urlencode "payload={\"text\":\"🔄 *APIM DR Switch Started* — $SWITCH_MSG\"}" \
-        "$WEBHOOK_URL"
+        curl -X POST "$WEBHOOK_URL" \
+             -H "Content-Type: application/json" \
+             -d "{\"text\": \"🔄 APIM DR Switch Started — $SWITCH_MSG\"}"
 
-    # ---------------- STORAGE PREP ----------------
     - name: Ensure Log Container Exists
       run: |
         az storage container create \
@@ -77,7 +69,6 @@ jobs:
           --account-key ${{ secrets.AZURE_STORAGE_KEY }} \
           1>/dev/null
 
-    # ---------------- SWITCH + LOG ----------------
     - name: Update Operation Backend + Save Log
       env:
         FROM_URL: ${{ steps.decide.outputs.FROM_URL }}
@@ -143,14 +134,12 @@ jobs:
           --name "$DATE_FILE" \
           --overwrite true >/dev/null
 
-    # ---------------- NOTIFY COMPLETE ----------------
     - name: Notify Complete (Slack/Teams)
       if: always()
       env:
         SWITCH_MSG: ${{ steps.decide.outputs.SWITCH_MSG }}
         WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
       run: |
-        curl -X POST \
-        -H "Content-Type: application/json" \
-        --data-urlencode "payload={\"text\":\"🎉 *APIM DR Switch Completed* — $SWITCH_MSG\"}" \
-        "$WEBHOOK_URL"
+        curl -X POST "$WEBHOOK_URL" \
+             -H "Content-Type: application/json" \
+             -d "{\"text\": \"🎉 APIM DR Switch Completed — $SWITCH_MSG\"}"
