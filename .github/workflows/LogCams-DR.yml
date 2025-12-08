@@ -1,4 +1,4 @@
-name: LogCams-DR
+name: APIM-DR
 
 on:
   workflow_dispatch:
@@ -26,12 +26,12 @@ jobs:
       DR_URL: "http://dinesh1.com"
       API_VERSION: "2022-08-01"
 
-      # LOG STORAGE (UPDATED as requested)
+      # LOG STORAGE
       STORAGE_ACCOUNT: "teststorageaccounttes"
       CONTAINER: "target"
 
     steps:
-    # ---------------------- LOGIN ----------------------
+    # ---------------- LOGIN ----------------
     - name: Azure Login
       env:
         AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
@@ -43,7 +43,7 @@ jobs:
           --password "$AZURE_CLIENT_SECRET" \
           --tenant "$AZURE_TENANT_ID"
 
-    # ---------------------- DECIDE SWITCH ----------------------
+    # ---------------- DECIDE DIR ----------------
     - name: Decide Direction
       id: decide
       run: |
@@ -57,16 +57,19 @@ jobs:
           echo "SWITCH_MSG=DR → Prod" >> $GITHUB_OUTPUT
         fi
 
-    # ---------------------- NOTIFY START ----------------------
+    # ---------------- NOTIFY START ----------------
     - name: Notify Start (Slack/Teams)
       env:
         SWITCH_MSG: ${{ steps.decide.outputs.SWITCH_MSG }}
         WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
       run: |
-        curl -X POST -H "Content-Type: application/json" -d "{\"text\":\"🔄 *APIM DR Switch Started* — $SWITCH_MSG\"}" "$WEBHOOK_URL"
+        curl -X POST \
+        -H "Content-Type: application/json" \
+        --data-urlencode "payload={\"text\":\"🔄 *APIM DR Switch Started* — $SWITCH_MSG\"}" \
+        "$WEBHOOK_URL"
 
-    # ---------------------- PREPARE STORAGE ----------------------
-    - name: Ensure Target Container Exists
+    # ---------------- STORAGE PREP ----------------
+    - name: Ensure Log Container Exists
       run: |
         az storage container create \
           --name $CONTAINER \
@@ -74,8 +77,8 @@ jobs:
           --account-key ${{ secrets.AZURE_STORAGE_KEY }} \
           1>/dev/null
 
-    # ---------------------- SWITCH BACKEND PER OPERATION ----------------------
-    - name: Update Operation Backend URL + Save Log
+    # ---------------- SWITCH + LOG ----------------
+    - name: Update Operation Backend + Save Log
       env:
         FROM_URL: ${{ steps.decide.outputs.FROM_URL }}
         TO_URL: ${{ steps.decide.outputs.TO_URL }}
@@ -85,8 +88,7 @@ jobs:
         SUBS_ID=$(az account show --query id -o tsv)
 
         TS=$(date '+%Y-%m-%d %H:%M:%S')
-        START_LOG="[$TS] START: $SWITCH_MSG"
-        echo "$START_LOG" > logtmp.txt
+        echo "[$TS] START: $SWITCH_MSG" > logtmp.txt
 
         OPS=$(az apim api operation list \
           --resource-group "$RESOURCE_GROUP" \
@@ -122,15 +124,14 @@ jobs:
           az rest --method put --uri "$URI" \
             --headers "Content-Type=application/json" \
             --headers "If-Match=*" \
-            --body "$BODY" 1>/dev/null
+            --body "$BODY" >/dev/null
 
           UPDATED_OPS+=("$op")
           echo "✔ Updated: $op"
         done
 
         END_TS=$(date '+%Y-%m-%d %H:%M:%S')
-        END_LOG="[$END_TS] COMPLETE: $SWITCH_MSG | Updated: ${UPDATED_OPS[*]:-None}"
-        echo "$END_LOG" >> logtmp.txt
+        echo "[$END_TS] COMPLETE: $SWITCH_MSG | Updated: ${UPDATED_OPS[*]:-None}" >> logtmp.txt
 
         DATE_FILE=$(date '+apim-switch-%Y-%m-%d.log')
 
@@ -140,15 +141,16 @@ jobs:
           --container-name $CONTAINER \
           --file logtmp.txt \
           --name "$DATE_FILE" \
-          --overwrite true 1>/dev/null
+          --overwrite true >/dev/null
 
-        echo "📄 LOG SAVED: $END_LOG"
-
-    # ---------------------- NOTIFY COMPLETE ----------------------
+    # ---------------- NOTIFY COMPLETE ----------------
     - name: Notify Complete (Slack/Teams)
       if: always()
       env:
         SWITCH_MSG: ${{ steps.decide.outputs.SWITCH_MSG }}
         WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
       run: |
-        curl -X POST -H "Content-Type: application/json" -d "{\"text\":\"🎉 *APIM DR Switch Completed* — $SWITCH_MSG\"}" "$WEBHOOK_URL"
+        curl -X POST \
+        -H "Content-Type: application/json" \
+        --data-urlencode "payload={\"text\":\"🎉 *APIM DR Switch Completed* — $SWITCH_MSG\"}" \
+        "$WEBHOOK_URL"
