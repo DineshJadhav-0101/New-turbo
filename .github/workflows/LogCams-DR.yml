@@ -20,15 +20,18 @@ jobs:
       RESOURCE_GROUP: "Dinesh-Test-resource-Group"
       APIM_NAME: "APIM-TESTNGT"
       API_ID: "TestUrl"
-
-      PROD_URL: "http://dinesh.com"
-      DR_URL: "http://dinesh1.com"
       API_VERSION: "2022-08-01"
 
+      # URLs
+      PROD_URL: "http://dinesh.com"
+      DR_URL: "http://dinesh1.com"
+
+      # STORAGE (you shared these)
       STORAGE_ACCOUNT: "teststorageaccounttes"
       CONTAINER: "target"
 
     steps:
+    # ---------- LOGIN ----------
     - name: Azure Login
       env:
         AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
@@ -40,106 +43,194 @@ jobs:
           --password "$AZURE_CLIENT_SECRET" \
           --tenant "$AZURE_TENANT_ID"
 
+    # ---------- DECIDE DIRECTION ----------
     - name: Decide Direction
       id: decide
       run: |
         if [ "${{ github.event.inputs.direction }}" = "prod-to-dr" ]; then
-          echo "FROM_URL=http://dinesh.com" >> $GITHUB_OUTPUT
-          echo "TO_URL=http://dinesh1.com" >> $GITHUB_OUTPUT
-          echo "SWITCH_MSG=Prod → DR" >> $GITHUB_OUTPUT
+          echo "FROM_URL=$PROD_URL" >> $GITHUB_OUTPUT
+          echo "TO_URL=$DR_URL" >> $GITHUB_OUTPUT
+          echo "SWITCH_MSG=Prod -> DR" >> $GITHUB_OUTPUT
         else
-          echo "FROM_URL=http://dinesh1.com" >> $GITHUB_OUTPUT
-          echo "TO_URL=http://dinesh.com" >> $GITHUB_OUTPUT
-          echo "SWITCH_MSG=DR → Prod" >> $GITHUB_OUTPUT
+          echo "FROM_URL=$DR_URL" >> $GITHUB_OUTPUT
+          echo "TO_URL=$PROD_URL" >> $GITHUB_OUTPUT
+          echo "SWITCH_MSG=DR -> Prod" >> $GITHUB_OUTPUT
         fi
 
-    - name: Notify Start
+    # ---------- NOTIFY START (NON-BLOCKING) ----------
+    - name: Notify Start (Slack/Teams)
       env:
         SWITCH_MSG: ${{ steps.decide.outputs.SWITCH_MSG }}
-        WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
+        WEBHOOK_URL_RAW: ${{ secrets.WEBHOOK_URL }}
       run: |
-        echo "{\"text\":\"🔄 APIM DR Switch Started — $SWITCH_MSG\"}" > notify.json
-        curl -X POST -H "Content-Type: application/json" -d @notify.json "$WEBHOOK_URL"
+        # Trim newlines / spaces from webhook URL
+        WEBHOOK_URL="$(printf '%s' "$WEBHOOK_URL_RAW" | tr -d '\r\n' | xargs)"
 
-    - name: Create Logging Container
+        if [ -z "$WEBHOOK_URL" ]; then
+          echo "WEBHOOK_URL is empty. Skipping start notification."
+          exit 0
+        fi
+
+        case "$WEBHOOK_URL" in
+          http://*|https://*) ;;
+          *)
+            echo "WEBHOOK_URL is not a valid URL: $WEBHOOK_URL"
+            echo "Skipping start notification."
+            exit 0
+            ;;
+        esac
+
+        echo "{\"text\":\"APIM DR Switch STARTED - $SWITCH_MSG\"}" > notify_start.json
+
+        set +e
+        curl -sS -X POST "$WEBHOOK_URL" \
+             -H "Content-Type: application/json" \
+             -d @notify_start.json
+        CURL_STATUS=$?
+        set -e
+
+        if [ $CURL_STATUS -ne 0 ]; then
+          echo "Warning: start notification failed with curl exit code $CURL_STATUS, but pipeline will continue."
+        fi
+
+    # ---------- ENSURE BLOB CONTAINER ----------
+    - name: Ensure Log Container Exists
       run: |
         az storage container create \
-          --name $CONTAINER \
-          --account-name $STORAGE_ACCOUNT \
-          --account-key ${{ secrets.AZURE_STORAGE_KEY }} \
+          --name "$CONTAINER" \
+          --account-name "$STORAGE_ACCOUNT" \
+          --account-key "${{ secrets.AZURE_STORAGE_KEY }}" \
           1>/dev/null
+        echo "Log container ensured: $CONTAINER"
 
-    - name: Update Operation Backends + Logging
+    # ---------- SWITCH BACKEND + LOG ----------
+    - name: Update Operation Backends + Save Log
       env:
         FROM_URL: ${{ steps.decide.outputs.FROM_URL }}
         TO_URL: ${{ steps.decide.outputs.TO_URL }}
         SWITCH_MSG: ${{ steps.decide.outputs.SWITCH_MSG }}
       run: |
         set -euo pipefail
+
         SUBS_ID=$(az account show --query id -o tsv)
 
-        TS=$(date '+%Y-%m-%d %H:%M:%S')
-        echo "[$TS] START: $SWITCH_MSG" > logtmp.txt
+        # Start log
+        TS_START=$(date '+%Y-%m-%d %H:%M:%S')
+        echo "[$TS_START] START: $SWITCH_MSG" > logtmp.txt
 
+        # Get all operation IDs
         OPS=$(az apim api operation list \
           --resource-group "$RESOURCE_GROUP" \
           --service-name "$APIM_NAME" \
           --api-id "$API_ID" \
           --query "[].name" -o tsv)
 
-        urlencode() { local s="$1"; local l=${#s}; for ((i=0;i<l;i++)); do c="${s:i:1}"; [[ "$c" =~ [a-zA-Z0-9.~_-] ]] && printf "%s" "$c" || printf '%%%02X' "'$c"; done; }
+        urlencode() {
+          local s="$1"
+          local l=${#s}
+          local i c
+          for ((i=0; i<l; i++)); do
+            c="${s:i:1}"
+            if [[ "$c" =~ [a-zA-Z0-9.~_-] ]]; then
+              printf "%s" "$c"
+            else
+              printf '%%%02X' "'$c"
+            fi
+          done
+        }
 
         UPDATED_OPS=()
 
         for op in $OPS; do
+          echo "Processing operation: $op"
           ENCODED=$(urlencode "$op")
           URI="https://management.azure.com/subscriptions/$SUBS_ID/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.ApiManagement/service/$APIM_NAME/apis/$API_ID/operations/$ENCODED/policies/policy?api-version=$API_VERSION"
 
           TMP=$(mktemp)
 
+          # Fetch existing policy XML (if any)
           if ! az rest --method get --uri "$URI" \
-              --headers "Accept=application/vnd.ms-azure-apim.policy+xml" \
-              --output-file "$TMP" >/dev/null 2>&1; then
+                --headers "Accept=application/vnd.ms-azure-apim.policy+xml" \
+                --output-file "$TMP" >/dev/null 2>&1; then
+            # No existing policy -> create new direct backend policy
             XML="<policies><inbound><base/><set-backend-service base-url=\"$TO_URL\"/></inbound><backend><base/></backend><outbound><base/></outbound><on-error><base/></on-error></policies>"
           else
+            # Clean BOM if present
             sed -i '1s/^\xEF\xBB\xBF//' "$TMP"
+
             if ! grep -q "$FROM_URL" "$TMP"; then
+              echo "  No matching URL in $op, skipping."
               rm -f "$TMP"
               continue
             fi
+
+            # Replace URL in the XML
             sed -i "s|$FROM_URL|$TO_URL|g" "$TMP"
             XML=$(cat "$TMP")
           fi
 
           rm -f "$TMP"
+
+          # Build JSON policy body with raw XML
           BODY=$(jq -n --arg v "$XML" '{properties:{format:"rawxml",value:$v}}')
 
+          # PUT updated policy (force overwrite with If-Match=*)
           az rest --method put --uri "$URI" \
             --headers "Content-Type=application/json" \
             --headers "If-Match=*" \
             --body "$BODY" >/dev/null
 
           UPDATED_OPS+=("$op")
+          echo "  Updated: $op"
         done
 
-        END_TS=$(date '+%Y-%m-%d %H:%M:%S')
-        echo "[$END_TS] COMPLETE: $SWITCH_MSG | Updated Operations: ${UPDATED_OPS[*]:-None}" >> logtmp.txt
+        TS_END=$(date '+%Y-%m-%d %H:%M:%S')
+        echo "[$TS_END] COMPLETE: $SWITCH_MSG | Updated Operations: ${UPDATED_OPS[*]:-None}" >> logtmp.txt
 
         DATE_FILE=$(date '+apim-switch-%Y-%m-%d.log')
 
         az storage blob upload \
-          --account-name $STORAGE_ACCOUNT \
-          --account-key ${{ secrets.AZURE_STORAGE_KEY }} \
-          --container-name $CONTAINER \
+          --account-name "$STORAGE_ACCOUNT" \
+          --account-key "${{ secrets.AZURE_STORAGE_KEY }}" \
+          --container-name "$CONTAINER" \
           --file logtmp.txt \
           --name "$DATE_FILE" \
           --overwrite true >/dev/null
 
-    - name: Notify Complete
+        echo "Log uploaded to blob: $DATE_FILE"
+
+    # ---------- NOTIFY COMPLETE (NON-BLOCKING) ----------
+    - name: Notify Complete (Slack/Teams)
       if: always()
       env:
         SWITCH_MSG: ${{ steps.decide.outputs.SWITCH_MSG }}
-        WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
+        WEBHOOK_URL_RAW: ${{ secrets.WEBHOOK_URL }}
       run: |
-        echo "{\"text\":\"🎉 APIM DR Switch Completed — $SWITCH_MSG\"}" > notify.json
-        curl -X POST -H "Content-Type: application/json" -d @notify.json "$WEBHOOK_URL"
+        WEBHOOK_URL="$(printf '%s' "$WEBHOOK_URL_RAW" | tr -d '\r\n' | xargs)"
+
+        if [ -z "$WEBHOOK_URL" ]; then
+          echo "WEBHOOK_URL is empty. Skipping completion notification."
+          exit 0
+        fi
+
+        case "$WEBHOOK_URL" in
+          http://*|https://*) ;;
+          *)
+            echo "WEBHOOK_URL is not a valid URL: $WEBHOOK_URL"
+            echo "Skipping completion notification."
+            exit 0
+            ;;
+        esac
+
+        echo "{\"text\":\"APIM DR Switch COMPLETED - $SWITCH_MSG\"}" > notify_done.json
+
+        set +e
+        curl -sS -X POST "$WEBHOOK_URL" \
+             -H "Content-Type: application/json" \
+             -d @notify_done.json
+        CURL_STATUS=$?
+        set -e
+
+        if [ $CURL_STATUS -ne 0 ]; then
+          echo "Warning: completion notification failed with curl exit code $CURL_STATUS, but pipeline is already finished."
+        fi
