@@ -1,0 +1,50 @@
+name: Transaction Push
+
+on:
+  workflow_dispatch:
+    inputs:
+      REF_Number:
+        description: "Enter the REF Number"
+        required: true
+        default: '{"key":{ "refNo" : ""}}'
+
+jobs:
+  Tran-Push:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Azure Login
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+        run: |
+          az login --service-principal \
+            --username "$AZURE_CLIENT_ID" \
+            --password "$AZURE_CLIENT_SECRET" \
+            --tenant "$AZURE_TENANT_ID"
+
+      - name: Display REF Number
+        run: echo "REF Number JSON:${{ github.event.inputs.REF_Number }}"
+
+      - name: Push Transaction to Service Bus Queue
+        env:
+          BODY: ${{ github.event.inputs.REF_Number }}
+        run: |
+          echo "Sending message to Azure Service Bus Queue..."
+
+          QUEUE_NAME="feed.file"
+          NS_NAME="D-service-bus"
+          RG_NAME="Test-Service-Bus"
+
+          az servicebus queue message send \
+            --queue-name "$QUEUE_NAME" \
+            --namespace-name "$NS_NAME" \
+            --resource-group "$RG_NAME" \
+            --content-type "application/json" \
+            --body "$BODY"
+
+          echo "Message pushed successfully!"
