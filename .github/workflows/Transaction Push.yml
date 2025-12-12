@@ -10,7 +10,7 @@ on:
 
 jobs:
   Tran-Push:
-    runs-on: ubuntu-latest
+    runs-on: PROD-DT-FE1
 
     env:
       QUEUE_NAME: feed.file
@@ -43,15 +43,19 @@ jobs:
           IP=$(curl -s https://api.ipify.org)
           echo "ip=$IP" >> "$GITHUB_OUTPUT"
 
-      - name: Configure Service Bus Firewall
+      - name: Configure Service Bus Firewall (Selected Networks)
         shell: bash
         run: |
-          az servicebus namespace network-rule update \
+          echo "Setting default action to Deny (Selected Networks)"
+
+          az servicebus namespace network-rule-set update \
             --resource-group "$RG_NAME" \
             --namespace-name "$NS_NAME" \
             --default-action Deny
 
-          az servicebus namespace network-rule ip-rule add \
+          echo "Adding runner IP to firewall"
+
+          az servicebus namespace network-rule-set ip-rule add \
             --resource-group "$RG_NAME" \
             --namespace-name "$NS_NAME" \
             --ip-address "${{ steps.myip.outputs.ip }}" \
@@ -68,6 +72,7 @@ jobs:
 
           while [ $attempts -lt 3 ]; do
             attempts=$((attempts+1))
+            echo "Attempt $attempts"
 
             if az servicebus queue message send \
               --queue-name "$QUEUE_NAME" \
@@ -84,18 +89,20 @@ jobs:
 
           if [ "$success" = false ]; then
             echo "status=failed" >> "$GITHUB_OUTPUT"
-            echo "error=Message send failed" >> "$GITHUB_OUTPUT"
+            echo "error=Message send failed after retries" >> "$GITHUB_OUTPUT"
             exit 1
           fi
 
           echo "status=success" >> "$GITHUB_OUTPUT"
           echo "error=" >> "$GITHUB_OUTPUT"
 
-      - name: Remove Runner IP
+      - name: Remove Runner IP from Firewall
         if: always()
         shell: bash
         run: |
-          az servicebus namespace network-rule ip-rule remove \
+          echo "Removing runner IP from firewall"
+
+          az servicebus namespace network-rule-set ip-rule remove \
             --resource-group "$RG_NAME" \
             --namespace-name "$NS_NAME" \
             --ip-address "${{ steps.myip.outputs.ip }}" || true
