@@ -3,6 +3,9 @@ name: Transaction Push
 on:
   workflow_dispatch:
     inputs:
+      SYSTEM_IP:
+        description: "Enter system public IP (example: 1.2.3.4/32)"
+        required: true
       REF_Number:
         description: "Enter the REF Number JSON"
         required: true
@@ -16,6 +19,7 @@ jobs:
       QUEUE_NAME: feed.file
       NS_NAME: D-service-bus
       RG_NAME: Test-Service-Bus
+
       STORAGE_ACCOUNT: ${{ secrets.AZURE_STORAGE_ACCOUNT }}
       STORAGE_KEY: ${{ secrets.AZURE_STORAGE_KEY }}
       CONTAINER: servicebus-logs
@@ -36,30 +40,33 @@ jobs:
             --password "$AZURE_CLIENT_SECRET" \
             --tenant "$AZURE_TENANT_ID"
 
-      - name: Get Runner Public IP
-        id: myip
+      - name: Save Current Firewall State
+        id: firewall
         shell: bash
         run: |
-          IP=$(curl -s https://api.ipify.org)
-          echo "ip=$IP" >> "$GITHUB_OUTPUT"
+          CUR_ACTION=$(az servicebus namespace network-rule-set show \
+            --resource-group "$RG_NAME" \
+            --namespace-name "$NS_NAME" \
+            --query "defaultAction" -o tsv)
 
-      - name: Configure Service Bus Firewall (Selected Networks)
+          echo "default_action=$CUR_ACTION" >> "$GITHUB_OUTPUT"
+
+      - name: Add System IP to Service Bus Firewall
         shell: bash
         run: |
-          echo "Setting default action to Deny (Selected Networks)"
+          az servicebus namespace network-rule-set ip-rule add \
+            --resource-group "$RG_NAME" \
+            --namespace-name "$NS_NAME" \
+            --ip-address "${{ github.event.inputs.SYSTEM_IP }}" \
+            --action Allow
 
+      - name: Switch to Selected Networks
+        shell: bash
+        run: |
           az servicebus namespace network-rule-set update \
             --resource-group "$RG_NAME" \
             --namespace-name "$NS_NAME" \
             --default-action Deny
-
-          echo "Adding runner IP to firewall"
-
-          az servicebus namespace network-rule-set ip-rule add \
-            --resource-group "$RG_NAME" \
-            --namespace-name "$NS_NAME" \
-            --ip-address "${{ steps.myip.outputs.ip }}" \
-            --action Allow
 
       - name: Send Message With Retry
         id: sendmsg
@@ -96,16 +103,19 @@ jobs:
           echo "status=success" >> "$GITHUB_OUTPUT"
           echo "error=" >> "$GITHUB_OUTPUT"
 
-      - name: Remove Runner IP from Firewall
+      - name: Restore Firewall (Remove IP & Restore State)
         if: always()
         shell: bash
         run: |
-          echo "Removing runner IP from firewall"
-
           az servicebus namespace network-rule-set ip-rule remove \
             --resource-group "$RG_NAME" \
             --namespace-name "$NS_NAME" \
-            --ip-address "${{ steps.myip.outputs.ip }}" || true
+            --ip-address "${{ github.event.inputs.SYSTEM_IP }}" || true
+
+          az servicebus namespace network-rule-set update \
+            --resource-group "$RG_NAME" \
+            --namespace-name "$NS_NAME" \
+            --default-action "${{ steps.firewall.outputs.default_action }}" || true
 
       - name: Upload Log to Blob Storage
         if: always()
@@ -120,7 +130,7 @@ jobs:
           printf '  "ref_number": %s,\n' "$BODY" >> "$LOG_FILE"
           printf '  "status": "%s",\n' "${{ steps.sendmsg.outputs.status }}" >> "$LOG_FILE"
           printf '  "error_message": "%s",\n' "${{ steps.sendmsg.outputs.error }}" >> "$LOG_FILE"
-          printf '  "runner_ip": "%s",\n' "${{ steps.myip.outputs.ip }}" >> "$LOG_FILE"
+          printf '  "system_ip": "%s",\n' "${{ github.event.inputs.SYSTEM_IP }}" >> "$LOG_FILE"
           printf '  "queue_name": "%s",\n' "$QUEUE_NAME" >> "$LOG_FILE"
           printf '  "namespace": "%s",\n' "$NS_NAME" >> "$LOG_FILE"
           printf '  "resource_group": "%s",\n' "$RG_NAME" >> "$LOG_FILE"
