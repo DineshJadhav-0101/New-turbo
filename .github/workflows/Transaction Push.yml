@@ -6,26 +6,26 @@ on:
       REF_Number:
         description: "Enter the REF Number JSON"
         required: true
-        default: '{"key":{ "refNo" : ""}}'
+        default: '{"key":{"refNo":""}}'
 
 jobs:
   Tran-Push:
     runs-on: PROD-DT-FE1
 
     env:
-      QUEUE_NAME: "feed.file"
-      NS_NAME: "D-service-bus"
-      RG_NAME: "Test-Service-Bus"
+      QUEUE_NAME: feed.file
+      NS_NAME: D-service-bus
+      RG_NAME: Test-Service-Bus
       STORAGE_ACCOUNT: ${{ secrets.AZURE_STORAGE_ACCOUNT }}
       STORAGE_KEY: ${{ secrets.AZURE_STORAGE_KEY }}
-      CONTAINER: "servicebus-logs"
+      CONTAINER: servicebus-logs
 
     steps:
-
       - name: Checkout code
         uses: actions/checkout@v3
 
       - name: Azure Login
+        shell: bash
         env:
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
@@ -38,22 +38,19 @@ jobs:
 
       - name: Get Runner Public IP
         id: myip
+        shell: bash
         run: |
           IP=$(curl -s https://api.ipify.org)
-          echo "ip=$IP" >> $GITHUB_OUTPUT
-          echo "Runner IP: $IP"
+          echo "ip=$IP" >> "$GITHUB_OUTPUT"
 
-      - name: Configure Service Bus Firewall (Selected Networks)
+      - name: Configure Service Bus Firewall
+        shell: bash
         run: |
-          echo "Switching Service Bus to Selected Networks mode and adding runner IP"
-
-          # Set default action to Deny (Selected Networks mode)
           az servicebus namespace network-rule update \
             --resource-group "$RG_NAME" \
             --namespace-name "$NS_NAME" \
             --default-action Deny
 
-          # Add runner IP
           az servicebus namespace network-rule ip-rule add \
             --resource-group "$RG_NAME" \
             --namespace-name "$NS_NAME" \
@@ -62,48 +59,42 @@ jobs:
 
       - name: Send Message With Retry
         id: sendmsg
+        shell: bash
         env:
           BODY: ${{ github.event.inputs.REF_Number }}
         run: |
-          echo "Sending Service Bus message with retry..."
-
           success=false
           attempts=0
-          max_attempts=3
-          ERROR_MSG=""
 
-          while [ $attempts -lt $max_attempts ]; do
+          while [ $attempts -lt 3 ]; do
             attempts=$((attempts+1))
-            echo "Attempt $attempts of $max_attempts..."
 
-            az servicebus queue message send \
+            if az servicebus queue message send \
               --queue-name "$QUEUE_NAME" \
               --namespace-name "$NS_NAME" \
               --resource-group "$RG_NAME" \
-              --content-type "application/json" \
-              --body "$BODY" && success=true && break
+              --content-type application/json \
+              --body "$BODY"; then
+              success=true
+              break
+            fi
 
-            ERROR_MSG="Send failed on attempt $attempts"
-            echo "$ERROR_MSG"
             sleep 5
           done
 
           if [ "$success" = false ]; then
-            echo "Send failed after retries"
-            echo "status=failed" >> $GITHUB_OUTPUT
-            echo "error=$ERROR_MSG" >> $GITHUB_OUTPUT
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "error=Message send failed" >> "$GITHUB_OUTPUT"
             exit 1
           fi
 
-          echo "Message sent successfully"
-          echo "status=success" >> $GITHUB_OUTPUT
-          echo "error=" >> $GITHUB_OUTPUT
+          echo "status=success" >> "$GITHUB_OUTPUT"
+          echo "error=" >> "$GITHUB_OUTPUT"
 
-      - name: Remove Runner IP from Firewall
+      - name: Remove Runner IP
         if: always()
+        shell: bash
         run: |
-          echo "Cleaning firewall IP..."
-
           az servicebus namespace network-rule ip-rule remove \
             --resource-group "$RG_NAME" \
             --namespace-name "$NS_NAME" \
@@ -111,26 +102,23 @@ jobs:
 
       - name: Upload Log to Blob Storage
         if: always()
+        shell: bash
+        env:
+          BODY: ${{ github.event.inputs.REF_Number }}
         run: |
-          echo "Preparing log file..."
-
           TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
           LOG_FILE="push-$TIMESTAMP.json"
 
-          cat <<EOF > $LOG_FILE
-{
-  "ref_number": ${BODY},
-  "status": "${{ steps.sendmsg.outputs.status }}",
-  "error_message": "${{ steps.sendmsg.outputs.error }}",
-  "runner_ip": "${{ steps.myip.outputs.ip }}",
-  "queue_name": "$QUEUE_NAME",
-  "namespace": "$NS_NAME",
-  "resource_group": "$RG_NAME",
-  "timestamp": "$TIMESTAMP"
-}
-EOF
-
-          echo "Uploading to Azure Blob..."
+          printf '{\n' > "$LOG_FILE"
+          printf '  "ref_number": %s,\n' "$BODY" >> "$LOG_FILE"
+          printf '  "status": "%s",\n' "${{ steps.sendmsg.outputs.status }}" >> "$LOG_FILE"
+          printf '  "error_message": "%s",\n' "${{ steps.sendmsg.outputs.error }}" >> "$LOG_FILE"
+          printf '  "runner_ip": "%s",\n' "${{ steps.myip.outputs.ip }}" >> "$LOG_FILE"
+          printf '  "queue_name": "%s",\n' "$QUEUE_NAME" >> "$LOG_FILE"
+          printf '  "namespace": "%s",\n' "$NS_NAME" >> "$LOG_FILE"
+          printf '  "resource_group": "%s",\n' "$RG_NAME" >> "$LOG_FILE"
+          printf '  "timestamp": "%s"\n' "$TIMESTAMP" >> "$LOG_FILE"
+          printf '}\n' >> "$LOG_FILE"
 
           az storage blob upload \
             --account-name "$STORAGE_ACCOUNT" \
@@ -138,5 +126,3 @@ EOF
             --container-name "$CONTAINER" \
             --file "$LOG_FILE" \
             --name "transaction-push/$LOG_FILE"
-
-          echo "Log uploaded successfully."
