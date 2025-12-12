@@ -10,7 +10,7 @@ on:
 
 jobs:
   Tran-Push:
-    runs-on: PROD-DT-FE1
+    runs-on: ubuntu-latest
 
     env:
       QUEUE_NAME: feed.file
