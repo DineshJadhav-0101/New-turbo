@@ -4,15 +4,24 @@ on:
   workflow_dispatch:
     inputs:
       REF_Number:
-        description: "Enter the REF Number"
+        description: "Enter the REF Number JSON"
         required: true
         default: '{"key":{ "refNo" : ""}}'
 
 jobs:
   Tran-Push:
-    runs-on: ubuntu-latest
+    runs-on: PROD-DT-FE1
+
+    env:
+      QUEUE_NAME: "feed.file"
+      NS_NAME: "D-service-bus"
+      RG_NAME: "Test-Service-Bus"
+      STORAGE_ACCOUNT: ${{ secrets.AZURE_STORAGE_ACCOUNT }}
+      STORAGE_KEY: ${{ secrets.AZURE_STORAGE_KEY }}
+      CONTAINER: "servicebus-logs"
 
     steps:
+
       - name: Checkout code
         uses: actions/checkout@v3
 
@@ -27,24 +36,107 @@ jobs:
             --password "$AZURE_CLIENT_SECRET" \
             --tenant "$AZURE_TENANT_ID"
 
-      - name: Display REF Number
-        run: echo "REF Number JSON:${{ github.event.inputs.REF_Number }}"
+      - name: Get Runner Public IP
+        id: myip
+        run: |
+          IP=$(curl -s https://api.ipify.org)
+          echo "ip=$IP" >> $GITHUB_OUTPUT
+          echo "Runner IP: $IP"
 
-      - name: Push Transaction to Service Bus Queue
+      - name: Configure Service Bus Firewall (Selected Networks)
+        run: |
+          echo "Switching Service Bus to Selected Networks mode and adding runner IP"
+
+          # Set default action to Deny (Selected Networks mode)
+          az servicebus namespace network-rule update \
+            --resource-group "$RG_NAME" \
+            --namespace-name "$NS_NAME" \
+            --default-action Deny
+
+          # Add runner IP
+          az servicebus namespace network-rule ip-rule add \
+            --resource-group "$RG_NAME" \
+            --namespace-name "$NS_NAME" \
+            --ip-address "${{ steps.myip.outputs.ip }}" \
+            --action Allow
+
+      - name: Send Message With Retry
+        id: sendmsg
         env:
           BODY: ${{ github.event.inputs.REF_Number }}
         run: |
-          echo "Sending message to Azure Service Bus Queue..."
+          echo "Sending Service Bus message with retry..."
 
-          QUEUE_NAME="feed.file"
-          NS_NAME="D-service-bus"
-          RG_NAME="Test-Service-Bus"
+          success=false
+          attempts=0
+          max_attempts=3
+          ERROR_MSG=""
 
-          az servicebus queue message send \
-            --queue-name "$QUEUE_NAME" \
-            --namespace-name "$NS_NAME" \
+          while [ $attempts -lt $max_attempts ]; do
+            attempts=$((attempts+1))
+            echo "Attempt $attempts of $max_attempts..."
+
+            az servicebus queue message send \
+              --queue-name "$QUEUE_NAME" \
+              --namespace-name "$NS_NAME" \
+              --resource-group "$RG_NAME" \
+              --content-type "application/json" \
+              --body "$BODY" && success=true && break
+
+            ERROR_MSG="Send failed on attempt $attempts"
+            echo "$ERROR_MSG"
+            sleep 5
+          done
+
+          if [ "$success" = false ]; then
+            echo "Send failed after retries"
+            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "error=$ERROR_MSG" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+          echo "Message sent successfully"
+          echo "status=success" >> $GITHUB_OUTPUT
+          echo "error=" >> $GITHUB_OUTPUT
+
+      - name: Remove Runner IP from Firewall
+        if: always()
+        run: |
+          echo "Cleaning firewall IP..."
+
+          az servicebus namespace network-rule ip-rule remove \
             --resource-group "$RG_NAME" \
-            --content-type "application/json" \
-            --body "$BODY"
+            --namespace-name "$NS_NAME" \
+            --ip-address "${{ steps.myip.outputs.ip }}" || true
 
-          echo "Message pushed successfully!"
+      - name: Upload Log to Blob Storage
+        if: always()
+        run: |
+          echo "Preparing log file..."
+
+          TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
+          LOG_FILE="push-$TIMESTAMP.json"
+
+          cat <<EOF > $LOG_FILE
+{
+  "ref_number": ${BODY},
+  "status": "${{ steps.sendmsg.outputs.status }}",
+  "error_message": "${{ steps.sendmsg.outputs.error }}",
+  "runner_ip": "${{ steps.myip.outputs.ip }}",
+  "queue_name": "$QUEUE_NAME",
+  "namespace": "$NS_NAME",
+  "resource_group": "$RG_NAME",
+  "timestamp": "$TIMESTAMP"
+}
+EOF
+
+          echo "Uploading to Azure Blob..."
+
+          az storage blob upload \
+            --account-name "$STORAGE_ACCOUNT" \
+            --account-key "$STORAGE_KEY" \
+            --container-name "$CONTAINER" \
+            --file "$LOG_FILE" \
+            --name "transaction-push/$LOG_FILE"
+
+          echo "Log uploaded successfully."
